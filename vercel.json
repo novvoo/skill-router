@@ -1,0 +1,14 @@
+{
+  "functions": {
+    "api/index.ts": {
+      "runtime": "nodejs22.x"
+    }
+  },
+  "rewrites": [
+    { "source": "/skills", "destination": "/api/index" },
+    { "source": "/choose", "destination": "/api/index" },
+    { "source": "/run", "destination": "/api/index" },
+    { "source": "/documents/extract", "destination": "/api/index" }
+  ]
+}
+

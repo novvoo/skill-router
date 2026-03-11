@@ -1,54 +1,71 @@
-# agentspace
+# Node.js/TypeScript 版 skill_router
 
-这个仓库包含两部分：
+这个目录把仓库里的 `skill_router`（Python CLI）改成 Node.js 的 TypeScript HTTP 服务：
 
-- `.agents/`：一套可复用的 Skills/Agent Prompts 索引与内容库
-- `skill_router/`：一个最小实现的“Claude Code 风格 Skill 路由器”（按需加载 `SKILL.md`）
+- `GET /skills`：列出可用 skills
+- `POST /choose`：仅做路由选择
+- `POST /run`：路由选择 + 注入 skill 内容后调用模型（可选：上传文档，作为任务上下文一起分析）
+- `POST /documents/extract`：上传文档并使用 `@kreuzberg/node` 在本机提取
 
-## skill_router 快速开始
+skills 来源直接读取仓库里的 `.agents/` 目录（包含 `CATALOG.md` 和各个 `*/SKILL.md`）。
 
-列出可用 skills（不需要配置模型参数）：
+## 配置
+
+支持两种方式提供 3 个 OpenAI 配置（每个请求都会用到）：
+
+- 方式 A：在服务器进程环境变量里设置
+  - `OPENAI_API_KEY`
+  - `OPENAI_BASE_URL`（例如 `https://api.openai.com/v1` 或你的兼容端点）
+  - `OPENAI_MODEL`（例如 `gpt-4.1-mini`）
+- 方式 B：由网页在浏览器本地保存（localStorage），并通过请求头传入（同一浏览器下关闭/重新打开仍保留，可手动清空）
+  - `X-OpenAI-API-Key`
+  - `X-OpenAI-Base-URL`
+  - `X-OpenAI-Model`
+
+## 本地运行
+
+在本目录下：
 
 ```bash
-python -m skill_router --list
+npm i
+npm run dev
 ```
 
-选择并执行（需要 OpenAI 兼容接口参数）：
+浏览器打开启动日志里输出的地址（默认 `http://127.0.0.1:8080/`；如果端口被占用会自动顺延），即可在页面里配置并调用接口。
+
+## Vercel 部署
+
+本项目使用 `public/` 提供静态页面，使用 `api/index.ts` 提供后端接口，并通过 `vercel.json` 把 `/skills`、`/choose`、`/run`、`/documents/extract` 重写到后端函数。
+
+## 调用示例
 
 ```bash
-python -m skill_router "帮我写一个Python脚本解析JSON" --api-key "xxxx" --base-url "https://api.siliconflow.cn/v1" --model "Qwen/Qwen3-8B"
+curl -s http://127.0.0.1:8080/skills | head
 ```
-
-只做路由选择：
 
 ```bash
-python -m skill_router --choose "我需要设计一个 REST API 的分页与错误格式" --api-key "xxxx" --base-url "https://api.siliconflow.cn/v1" --model "Qwen/Qwen3-8B"
+curl -s http://127.0.0.1:8080/choose ^
+  -H "content-type: application/json" ^
+  -d "{\"query\":\"帮我设计一个 REST API 的分页规范\"}"
 ```
-
-JSON 输出（包含 used_skills）：
 
 ```bash
-python -m skill_router "帮我写一个Python脚本解析JSON" --json --api-key "xxxx" --base-url "https://api.siliconflow.cn/v1" --model "Qwen/Qwen3-8B"
+curl -s http://127.0.0.1:8080/run ^
+  -H "content-type: application/json" ^
+  -d "{\"query\":\"帮我设计一个 REST API 的分页规范\"}"
 ```
 
-非 `--json` 输出会在第一行展示使用的 skill（或 none），后面直接输出最终回复内容。
+```bash
+curl -s http://127.0.0.1:8080/run ^
+  -F "query=请根据文档内容，提炼关键结论并给出执行建议" ^
+  -F "file=@./path/to/document.pdf"
+```
 
-## 环境变量（可选）
+```bash
+curl -s http://127.0.0.1:8080/documents/extract ^
+  -F "file=@./path/to/document.pdf"
+```
 
-如果不想每次传 CLI 参数，也可以使用环境变量：
-
-- `OPENAI_API_KEY`
-- `OPENAI_BASE_URL`
-- `OPENAI_MODEL`
-
-技能扫描根目录（可选，使用 `;` 分隔多个目录）：
-
-- `SKILL_ROOTS_ENTERPRISE`
-- `SKILL_ROOTS_USER`
-- `SKILL_ROOTS_PROJECT`
-- `SKILL_ROOTS_PLUGIN`
-
-## 目录说明
-
-- Skills/Agents 内容库说明见 [.agents/README.md](.agents/README.md)
-- 路由器实现说明见 [skill_router/README.md](skill_router/README.md)
+说明：
+- `mime_type`/`mimeType` 字段可选；后端会优先按上传文件自带的 Content-Type、文件内容特征（magic bytes）与文件扩展名自动识别。
+- 如果你需要强制指定解析类型（例如把无扩展名文件当作 PDF），再手动传 `mime_type=application/pdf`。

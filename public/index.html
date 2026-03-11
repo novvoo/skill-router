@@ -1,0 +1,305 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>skill-router</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        --mui-font: Roboto, system-ui, -apple-system, Segoe UI, Helvetica, Arial;
+        --mui-bg: #121212;
+        --mui-paper: #1e1e1e;
+        --mui-divider: rgba(255, 255, 255, 0.12);
+        --mui-text: rgba(255, 255, 255, 0.87);
+        --mui-text-2: rgba(255, 255, 255, 0.7);
+        --mui-text-3: rgba(255, 255, 255, 0.6);
+        --mui-primary: #1976d2;
+        --mui-primary-2: #1565c0;
+        --mui-error: #f44336;
+        --mui-success: #2e7d32;
+        --mui-radius: 12px;
+        --mui-radius-2: 16px;
+        --mui-shadow-1: 0px 2px 1px -1px rgba(0,0,0,0.2), 0px 1px 1px 0px rgba(0,0,0,0.14), 0px 1px 3px 0px rgba(0,0,0,0.12);
+        --mui-shadow-2: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
+      }
+
+      body {
+        font-family: var(--mui-font);
+        margin: 0;
+        background:
+          radial-gradient(1200px 700px at 22% -10%, rgba(25, 118, 210, 0.14), transparent 60%),
+          radial-gradient(900px 520px at 90% 8%, rgba(46, 125, 50, 0.10), transparent 55%),
+          var(--mui-bg);
+        color: var(--mui-text);
+      }
+      .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 18px 44px; }
+      h1 { font-size: 20px; font-weight: 600; margin: 0 0 18px; letter-spacing: 0.1px; }
+      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
+      @media (min-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
+      .card { background: var(--mui-paper); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 16px; box-shadow: var(--mui-shadow-1); }
+      .card:hover { box-shadow: var(--mui-shadow-2); }
+      .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--mui-text); letter-spacing: 0.12px; }
+      label { display: block; font-size: 12px; color: var(--mui-text-2); margin-bottom: 6px; }
+      input, textarea, select {
+        width: 100%;
+        box-sizing: border-box;
+        background: transparent;
+        color: var(--mui-text);
+        border: 1px solid rgba(255, 255, 255, 0.23);
+        border-radius: 10px;
+        padding: 10px 12px;
+        outline: none;
+        transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
+      }
+      input::placeholder, textarea::placeholder { color: rgba(255, 255, 255, 0.45); }
+      input:hover, textarea:hover, select:hover { border-color: rgba(255, 255, 255, 0.4); }
+      input:focus, textarea:focus, select:focus { border-color: var(--mui-primary); box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
+      textarea { min-height: 132px; resize: vertical; }
+      input[type="file"] { padding: 8px 10px; }
+      .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      @media (min-width: 560px) { .row { grid-template-columns: 1fr 1fr; } }
+      .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
+      button {
+        background: var(--mui-primary);
+        border: 0;
+        color: #fff;
+        border-radius: 999px;
+        padding: 10px 14px;
+        cursor: pointer;
+        font-weight: 600;
+        letter-spacing: 0.2px;
+        box-shadow: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
+        transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+      }
+      button:hover { background: var(--mui-primary-2); box-shadow: 0px 5px 5px -3px rgba(0,0,0,0.2), 0px 8px 10px 1px rgba(0,0,0,0.14), 0px 3px 14px 2px rgba(0,0,0,0.12); }
+      button:active { transform: translateY(0.5px); }
+      button.secondary {
+        background: transparent;
+        color: var(--mui-text);
+        border: 1px solid rgba(255, 255, 255, 0.23);
+        box-shadow: none;
+      }
+      button.secondary:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.35); box-shadow: none; }
+      .hint { font-size: 12px; color: var(--mui-text-3); line-height: 1.4; }
+      pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 12px; overflow: auto; margin: 12px 0 0; }
+      .ok { color: #81c784; }
+      .err { color: #e57373; }
+
+      .app { min-height: 100vh; display: flex; flex-direction: column; }
+      .appbar {
+        position: sticky;
+        top: 0;
+        z-index: 5;
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        padding: 12px 14px;
+        background: rgba(18, 18, 18, 0.62);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid var(--mui-divider);
+      }
+      .title { font-size: 16px; font-weight: 650; letter-spacing: 0.1px; }
+      .spacer { flex: 1; }
+      .iconBtn {
+        width: 40px;
+        height: 40px;
+        border-radius: 999px;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        background: transparent;
+        border: 1px solid rgba(255, 255, 255, 0.16);
+        color: var(--mui-text);
+        cursor: pointer;
+        box-shadow: none;
+      }
+      .iconBtn:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.28); }
+      .iconBtn:active { transform: translateY(0.5px); }
+
+      .main { flex: 1; }
+      .page { max-width: 1040px; margin: 0 auto; padding: 16px 18px 28px; }
+
+      .chatShell { display: flex; flex-direction: column; gap: 12px; min-height: calc(100vh - 72px); }
+      .chatMessages {
+        flex: 1;
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        padding: 14px;
+        background: rgba(255, 255, 255, 0.03);
+        border: 1px solid var(--mui-divider);
+        border-radius: var(--mui-radius-2);
+        overflow: auto;
+      }
+      .chatMessages:empty::before {
+        content: "开始一段对话吧：输入问题，或上传文档作为参考。";
+        color: rgba(255, 255, 255, 0.45);
+        font-size: 13px;
+        line-height: 1.6;
+        padding: 10px 6px;
+      }
+      .chatMessages::-webkit-scrollbar { width: 10px; height: 10px; }
+      .chatMessages::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
+      .chatMessages::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); border: 2px solid transparent; background-clip: padding-box; }
+      .msg { display: flex; }
+      .msg.user { justify-content: flex-end; }
+      .msg.assistant { justify-content: flex-start; }
+      .msgCol { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
+      .msg.user .msgCol { align-items: flex-end; }
+      .bubble {
+        max-width: min(720px, 92%);
+        padding: 10px 12px;
+        border-radius: 14px;
+        border: 1px solid var(--mui-divider);
+        background: rgba(255, 255, 255, 0.04);
+        white-space: pre-wrap;
+        word-break: break-word;
+        line-height: 1.55;
+      }
+      .msg.assistant .bubble {
+        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
+      }
+      .msg.user .bubble {
+        background: linear-gradient(180deg, rgba(25, 118, 210, 0.22), rgba(25, 118, 210, 0.14));
+        border-color: rgba(25, 118, 210, 0.38);
+      }
+      .metaLine { font-size: 12px; color: rgba(255, 255, 255, 0.50); }
+      .msg.user .metaLine { text-align: right; }
+
+      .composer { padding: 14px; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius-2); background: rgba(30, 30, 30, 0.86); backdrop-filter: blur(8px); box-shadow: var(--mui-shadow-1); }
+      .composer textarea { min-height: 86px; }
+      .attachRow { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 12px; }
+      @media (min-width: 700px) { .attachRow { grid-template-columns: 1fr 1fr; } }
+
+      .backdrop {
+        position: fixed;
+        inset: 0;
+        background: rgba(0, 0, 0, 0.56);
+        z-index: 10;
+        opacity: 1;
+        transition: opacity 120ms ease;
+      }
+      .backdrop.hidden { opacity: 0; pointer-events: none; }
+      .drawer {
+        position: fixed;
+        top: 0;
+        left: 0;
+        bottom: 0;
+        width: min(420px, 92vw);
+        background: var(--mui-paper);
+        border-right: 1px solid var(--mui-divider);
+        z-index: 11;
+        transform: translateX(0);
+        transition: transform 160ms ease;
+        display: flex;
+        flex-direction: column;
+      }
+      .drawer.hidden { transform: translateX(-104%); }
+      .drawerHeader { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--mui-divider); }
+      .drawerTitle { font-size: 14px; font-weight: 600; }
+      .drawerBody { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
+      .section { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 14px; }
+      .sectionTitle { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--mui-text); }
+    </style>
+  </head>
+  <body>
+    <div class="app">
+      <header class="appbar">
+        <button id="menuBtn" class="iconBtn" aria-label="menu">≡</button>
+        <div class="title">skill-router</div>
+        <div class="spacer"></div>
+        <button id="newChatBtn" class="secondary">新对话</button>
+      </header>
+
+      <main class="main">
+        <div class="page">
+          <div class="chatShell">
+            <div id="chatMessages" class="chatMessages" aria-label="messages"></div>
+            <div class="composer">
+              <label>输入</label>
+              <textarea id="chatInput" placeholder="描述你的任务…"></textarea>
+              <div class="attachRow">
+                <div>
+                  <label>文档（可选）</label>
+                  <input id="chatDocFile" type="file" />
+                </div>
+              </div>
+              <div class="btns">
+                <button id="chatSend">发送</button>
+              </div>
+              <div id="chatHint" class="hint" style="margin-top: 8px;"></div>
+            </div>
+          </div>
+        </div>
+      </main>
+    </div>
+
+    <div id="drawerBackdrop" class="backdrop hidden"></div>
+    <aside id="drawer" class="drawer hidden" aria-label="menu">
+      <div class="drawerHeader">
+        <div class="drawerTitle">菜单</div>
+        <div class="spacer"></div>
+        <button id="drawerClose" class="iconBtn" aria-label="close">×</button>
+      </div>
+      <div class="drawerBody">
+        <div class="section">
+          <div class="sectionTitle">本地配置（浏览器保存）</div>
+          <div class="row">
+            <div>
+              <label>OPENAI_API_KEY</label>
+              <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
+            </div>
+            <div>
+              <label>OPENAI_MODEL</label>
+              <input id="model" type="text" autocomplete="off" placeholder="gpt-4.1-mini" />
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <label>OPENAI_BASE_URL</label>
+            <input id="baseUrl" type="text" autocomplete="off" placeholder="https://api.openai.com/v1" />
+          </div>
+          <div class="btns">
+            <button id="saveCfg">保存到浏览器本地</button>
+            <button id="clearCfg" class="secondary">清空本地配置</button>
+            <button id="checkCfg" class="secondary">连通性自检</button>
+          </div>
+          <div id="cfgStatus" class="hint" style="margin-top: 8px;"></div>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">Skills</div>
+          <div class="btns">
+            <button id="reloadSkills" class="secondary">刷新列表</button>
+          </div>
+          <pre id="skillsOut"></pre>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">路由选择（/choose）</div>
+          <label>Query</label>
+          <textarea id="chooseQuery" placeholder="帮我设计一个 REST API 的分页规范"></textarea>
+          <div class="btns">
+            <button id="btnChoose">Choose</button>
+          </div>
+          <pre id="chooseOut"></pre>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">文档提取（/documents/extract）</div>
+          <div class="row">
+            <div>
+              <label>File</label>
+              <input id="docFile" type="file" />
+            </div>
+          </div>
+          <div class="btns">
+            <button id="btnExtract">Extract</button>
+          </div>
+          <pre id="docOut"></pre>
+        </div>
+      </div>
+    </aside>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>
