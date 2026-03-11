@@ -4,6 +4,7 @@
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1" />
     <title>skill-router</title>
+    <link rel="stylesheet" href="/vendor/highlight.js/styles/github-dark.css" />
     <style>
       :root {
         color-scheme: dark;
@@ -85,6 +86,7 @@
       pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 12px; overflow: auto; margin: 12px 0 0; }
       .ok { color: #81c784; }
       .err { color: #e57373; }
+      .vHidden { display: none !important; }
 
       .app { min-height: 100vh; display: flex; flex-direction: column; }
       .appbar {
@@ -153,9 +155,58 @@
         border-radius: 14px;
         border: 1px solid var(--mui-divider);
         background: rgba(255, 255, 255, 0.04);
-        white-space: pre-wrap;
+        white-space: normal;
         word-break: break-word;
         line-height: 1.55;
+      }
+      .bubble :first-child { margin-top: 0; }
+      .bubble :last-child { margin-bottom: 0; }
+      .bubble p { margin: 0 0 10px; }
+      .bubble ul, .bubble ol { margin: 8px 0 8px 20px; padding: 0; }
+      .bubble li { margin: 4px 0; }
+      .bubble a { color: #90caf9; text-decoration: underline; }
+      .bubble blockquote {
+        margin: 10px 0;
+        padding: 8px 12px;
+        border-left: 3px solid rgba(144, 202, 249, 0.45);
+        background: rgba(255, 255, 255, 0.03);
+        border-radius: 10px;
+      }
+      .bubble code {
+        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
+        font-size: 12.5px;
+        background: rgba(0, 0, 0, 0.18);
+        border: 1px solid rgba(255, 255, 255, 0.08);
+        padding: 0 6px;
+        border-radius: 8px;
+      }
+      .bubble pre {
+        margin: 10px 0;
+        padding: 12px;
+        background: rgba(0, 0, 0, 0.30);
+        border: 1px solid var(--mui-divider);
+        border-radius: 12px;
+        overflow: auto;
+      }
+      .bubble pre code {
+        display: block;
+        background: transparent;
+        border: 0;
+        padding: 0;
+        border-radius: 0;
+        font-size: 12.5px;
+        line-height: 1.6;
+      }
+      .bubble hr { border: 0; border-top: 1px solid var(--mui-divider); margin: 12px 0; }
+      .bubble table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
+      .bubble th, .bubble td { border: 1px solid var(--mui-divider); padding: 6px 8px; vertical-align: top; }
+      .bubble th { background: rgba(255, 255, 255, 0.04); font-weight: 600; }
+      .mdPreview {
+        margin-top: 10px;
+        padding: 10px 12px;
+        border-radius: 10px;
+        border: 1px solid rgba(255, 255, 255, 0.23);
+        background: rgba(255, 255, 255, 0.03);
       }
       .msg.assistant .bubble {
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
@@ -219,6 +270,7 @@
             <div class="composer">
               <label>输入</label>
               <textarea id="chatInput" placeholder="描述你的任务…"></textarea>
+              <div id="chatPreview" class="mdPreview vHidden" aria-label="preview" aria-hidden="true"></div>
               <div class="attachRow">
                 <div>
                   <label>文档（可选）</label>
@@ -227,6 +279,7 @@
               </div>
               <div class="btns">
                 <button id="chatSend">发送</button>
+                <button id="chatPreviewBtn" class="secondary" aria-pressed="false" aria-controls="chatPreview">预览</button>
               </div>
               <div id="chatHint" class="hint" style="margin-top: 8px;"></div>
             </div>

@@ -252,6 +252,7 @@ function parseCatalogMarkdown(md: string): Catalog {
 
 const AGENTS_DIR = path.resolve(process.cwd(), ".agents");
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
+const NODE_MODULES_DIR = path.resolve(process.cwd(), "node_modules");
 const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 let cachedCatalog: Catalog | null = null;
@@ -531,15 +532,68 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
 }
 
 async function servePublicFile(res: http.ServerResponse, pathname: string) {
-  if (pathname === "/") {
-    const html = await readFile(path.resolve(PUBLIC_DIR, "index.html"), "utf8");
-    return sendText(res, 200, "text/html; charset=utf-8", html);
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
   }
-  if (pathname === "/app.js") {
-    const js = await readFile(path.resolve(PUBLIC_DIR, "app.js"), "utf8");
-    return sendText(res, 200, "text/javascript; charset=utf-8", js);
+  const rel = decoded === "/" ? "index.html" : decoded.replace(/^\/+/, "");
+  if (!rel || rel.includes("..") || rel.includes("\\") || rel.includes("\0")) return null;
+  const abs = path.resolve(PUBLIC_DIR, rel);
+  const safeRel = path.relative(PUBLIC_DIR, abs);
+  if (!safeRel || safeRel.startsWith("..") || path.isAbsolute(safeRel)) return null;
+  let data: Buffer;
+  try {
+    data = await readFile(abs);
+  } catch {
+    return null;
   }
-  return null;
+  const ext = path.extname(abs).toLowerCase();
+  const ct =
+    ext === ".html" || ext === ".htm"
+      ? "text/html; charset=utf-8"
+      : ext === ".js" || ext === ".mjs"
+        ? "text/javascript; charset=utf-8"
+        : ext === ".css"
+          ? "text/css; charset=utf-8"
+          : ext === ".json"
+            ? "application/json; charset=utf-8"
+            : "application/octet-stream";
+  return sendText(res, 200, ct, data);
+}
+
+const VENDOR_ALLOW: Record<string, string[]> = {
+  marked: ["lib/marked.esm.js"],
+  dompurify: ["dist/purify.es.mjs"],
+  "highlight.js": ["styles/github-dark.css"],
+};
+
+async function serveVendorFile(res: http.ServerResponse, pathname: string) {
+  if (!pathname.startsWith("/vendor/")) return null;
+  const parts = pathname.split("/").filter(Boolean);
+  if (parts.length < 3) return null;
+  const pkg = parts[1];
+  const rel = parts.slice(2).join("/");
+  const allow = VENDOR_ALLOW[pkg];
+  if (!allow || !allow.includes(rel)) return null;
+  const abs = path.resolve(NODE_MODULES_DIR, pkg, rel);
+  const safeRel = path.relative(path.resolve(NODE_MODULES_DIR, pkg), abs);
+  if (!safeRel || safeRel.startsWith("..") || path.isAbsolute(safeRel)) return null;
+  let data: Buffer;
+  try {
+    data = await readFile(abs);
+  } catch {
+    return null;
+  }
+  const ext = path.extname(abs).toLowerCase();
+  const ct =
+    ext === ".js" || ext === ".mjs"
+      ? "text/javascript; charset=utf-8"
+      : ext === ".css"
+        ? "text/css; charset=utf-8"
+        : "application/octet-stream";
+  return sendText(res, 200, ct, data);
 }
 
 export async function handleRequest(req: http.IncomingMessage, res: http.ServerResponse) {
@@ -554,9 +608,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     const host = String(req.headers.host || "127.0.0.1");
     const url = new URL(req.url || "/", `http://${host}`);
 
-    if (req.method === "GET" && (url.pathname === "/" || url.pathname === "/app.js")) {
+    if (req.method === "GET" && url.pathname.startsWith("/vendor/")) {
+      const served = await serveVendorFile(res, url.pathname);
+      if (served !== null) return;
+    }
+
+    if (req.method === "GET") {
       const accept = String(req.headers.accept || "");
-      if (url.pathname !== "/" || accept.includes("text/html")) {
+      if (url.pathname === "/" ? accept.includes("text/html") : true) {
         const served = await servePublicFile(res, url.pathname);
         if (served !== null) return;
       }

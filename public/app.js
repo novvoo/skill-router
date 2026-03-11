@@ -1,4 +1,41 @@
+import { marked } from "/vendor/marked/lib/marked.esm.js";
+import DOMPurify from "/vendor/dompurify/dist/purify.es.mjs";
+import hljs from "/vendor/highlight.js/es/common.js";
+
 const KEY = "skill-router:openai";
+
+function safeLinkHref(href) {
+  const raw = String(href || "").trim();
+  if (!raw) return "";
+  try {
+    const u = new URL(raw, window.location.origin);
+    if (u.protocol === "http:" || u.protocol === "https:" || u.protocol === "mailto:") return u.toString();
+  } catch {}
+  return "";
+}
+
+const mdRenderer = new marked.Renderer();
+mdRenderer.link = (href, title, text) => {
+  const safeHref = safeLinkHref(href);
+  const safeTitle = title ? String(title) : "";
+  const t = String(text || "");
+  if (!safeHref) return t;
+  const titleAttr = safeTitle ? ` title="${safeTitle.replaceAll('"', "&quot;")}"` : "";
+  return `<a href="${safeHref}" target="_blank" rel="noopener noreferrer"${titleAttr}>${t}</a>`;
+};
+
+marked.setOptions({ gfm: true, breaks: true, renderer: mdRenderer });
+
+function renderMarkdownToHtml(text) {
+  const raw = marked.parse(String(text || ""));
+  return DOMPurify.sanitize(raw, { USE_PROFILES: { html: true } });
+}
+
+function highlightIn(el) {
+  if (!el) return;
+  const codes = el.querySelectorAll("pre code");
+  for (const code of codes) hljs.highlightElement(code);
+}
 
 function loadCfg() {
   try {
@@ -116,6 +153,7 @@ async function doChoose() {
 }
 
 let chatMessages = [];
+let chatPreviewOn = false;
 
 function renderChat() {
   const wrap = document.getElementById("chatMessages");
@@ -127,7 +165,8 @@ function renderChat() {
     col.className = "msgCol";
     const bubble = document.createElement("div");
     bubble.className = "bubble";
-    bubble.textContent = m.text || "";
+    bubble.innerHTML = renderMarkdownToHtml(m.text || "");
+    highlightIn(bubble);
     col.appendChild(bubble);
     if (m.meta) {
       const meta = document.createElement("div");
@@ -145,6 +184,28 @@ function setChatHint(text, ok = true) {
   const el = document.getElementById("chatHint");
   el.className = ok ? "hint ok" : "hint err";
   el.textContent = text || "";
+}
+
+function setChatPreview(on) {
+  chatPreviewOn = Boolean(on);
+  const input = document.getElementById("chatInput");
+  const preview = document.getElementById("chatPreview");
+  const btn = document.getElementById("chatPreviewBtn");
+  if (chatPreviewOn) {
+    input.classList.add("vHidden");
+    preview.classList.remove("vHidden");
+    btn.textContent = "编辑";
+    btn.setAttribute("aria-pressed", "true");
+    preview.setAttribute("aria-hidden", "false");
+    preview.innerHTML = renderMarkdownToHtml(String(input.value || ""));
+    highlightIn(preview);
+  } else {
+    input.classList.remove("vHidden");
+    preview.classList.add("vHidden");
+    btn.textContent = "预览";
+    btn.setAttribute("aria-pressed", "false");
+    preview.setAttribute("aria-hidden", "true");
+  }
 }
 
 function openDrawer() {
@@ -165,6 +226,7 @@ async function sendChat() {
   const file = document.getElementById("chatDocFile").files?.[0] || null;
 
   setChatHint("");
+  if (chatPreviewOn) setChatPreview(false);
   chatMessages = [...chatMessages, { role: "user", text: query }];
   chatMessages = [...chatMessages, { role: "assistant", text: "思考中…" }];
   renderChat();
@@ -196,6 +258,7 @@ async function sendChat() {
 function newChat() {
   chatMessages = [{ role: "assistant", text: "你好，我是 skill-router。把你的任务发给我，必要时可以附带文档。" }];
   document.getElementById("chatInput").value = "";
+  setChatPreview(false);
   const f = document.getElementById("chatDocFile");
   if (f) f.value = "";
   setChatHint("");
@@ -270,10 +333,19 @@ document.getElementById("drawerClose").addEventListener("click", closeDrawer);
 document.getElementById("drawerBackdrop").addEventListener("click", closeDrawer);
 document.getElementById("newChatBtn").addEventListener("click", newChat);
 document.getElementById("chatSend").addEventListener("click", sendChat);
+document.getElementById("chatPreviewBtn").addEventListener("click", () => setChatPreview(!chatPreviewOn));
 document.getElementById("chatInput").addEventListener("keydown", (e) => {
   if (e.key === "Enter" && !e.shiftKey) {
     e.preventDefault();
     void sendChat();
+  }
+});
+
+document.addEventListener("keydown", (e) => {
+  if (chatPreviewOn && e.key === "Escape") {
+    e.preventDefault();
+    setChatPreview(false);
+    document.getElementById("chatInput").focus();
   }
 });
 
