@@ -1,7 +1,7 @@
 {
   "functions": {
     "api/index.ts": {
-      "runtime": "nodejs22.x"
+      "runtime": "nodejs20.x"
     }
   },
   "rewrites": [
@@ -11,4 +11,3 @@
     { "source": "/documents/extract", "destination": "/api/index" }
   ]
 }
-
