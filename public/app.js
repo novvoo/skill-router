@@ -3,6 +3,16 @@ import DOMPurify from "/vendor/dompurify/dist/purify.es.mjs";
 import hljs from "/vendor/highlight.js/es/common.js";
 
 const KEY = "skill-router:openai";
+const SESSION_KEY = "skill-router:session_id";
+
+function getSessionId() {
+  let sid = localStorage.getItem(SESSION_KEY);
+  if (!sid) {
+    sid = "sess_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
+    localStorage.setItem(SESSION_KEY, sid);
+  }
+  return sid;
+}
 
 function safeLinkHref(href) {
   const raw = String(href || "").trim();
@@ -39,7 +49,8 @@ function highlightIn(el) {
 
 function loadCfg() {
   try {
-    return JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    const local = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    return local;
   } catch {
     return {};
   }
@@ -150,6 +161,7 @@ function cfgFromInputs() {
     apiKey: document.getElementById("apiKey").value.trim(),
     baseUrl: document.getElementById("baseUrl").value.trim(),
     model: document.getElementById("model").value.trim(),
+    embeddingModel: document.getElementById("embeddingModel").value.trim(),
     defaultHeaders: customHeadersFromTable(),
     systemContent: document.getElementById("systemContent").value.trim(),
   };
@@ -159,6 +171,7 @@ function fillInputs(cfg) {
   document.getElementById("apiKey").value = cfg.apiKey || "";
   document.getElementById("baseUrl").value = cfg.baseUrl || "";
   document.getElementById("model").value = cfg.model || "";
+  document.getElementById("embeddingModel").value = cfg.embeddingModel || "";
   fillCustomHeadersTable(cfg.defaultHeaders);
   document.getElementById("systemContent").value = cfg.systemContent || "";
 }
@@ -185,6 +198,7 @@ function headersFromCfg(cfg) {
   if (cfg.apiKey) h["X-OpenAI-API-Key"] = cfg.apiKey;
   if (cfg.baseUrl) h["X-OpenAI-Base-URL"] = cfg.baseUrl;
   if (cfg.model) h["X-OpenAI-Model"] = cfg.model;
+  if (cfg.embeddingModel) h["X-OpenAI-Embedding-Model"] = cfg.embeddingModel;
   return h;
 }
 
@@ -318,6 +332,29 @@ function renderChat() {
       meta.textContent = m.meta;
       col.appendChild(meta);
     }
+    
+    if (m.trajectory) {
+        const traj = document.createElement("div");
+        traj.className = "trajectory";
+        traj.innerHTML = `<div><strong>Retrieval Trajectory:</strong></div>` + m.trajectory.map(t => `<div>> ${t}</div>`).join("");
+        
+        const btn = document.createElement("button");
+        btn.className = "trajBtn";
+        btn.textContent = "Show Trajectory";
+        btn.onclick = () => {
+            if (traj.style.display === "block") {
+                traj.style.display = "none";
+                btn.textContent = "Show Trajectory";
+            } else {
+                traj.style.display = "block";
+                btn.textContent = "Hide Trajectory";
+            }
+        };
+        
+        col.appendChild(btn);
+        col.appendChild(traj);
+    }
+
     row.appendChild(col);
     wrap.appendChild(row);
   }
@@ -368,7 +405,7 @@ async function sendChat() {
   if (!query) return;
 
   const file = document.getElementById("chatDocFile").files?.[0] || null;
-  const nextCtxMessages = [...chatCtxMessages, { role: "user", content: query }];
+  const nextCtxMessages = [...chatCtxMessages, { role: "user", content: query, sessionId: getSessionId() }];
 
   setChatHint("");
   if (chatPreviewOn) setChatPreview(false);
@@ -402,21 +439,109 @@ async function sendChat() {
     const used = Array.isArray(data?.used_skills) ? data.used_skills.join(", ") : "";
     const chosen = data?.chosen?.skill ? String(data.chosen.skill) : "";
     const meta = chosen ? `chosen: ${chosen}${used ? ` · used: ${used}` : ""}` : used ? `used: ${used}` : "";
-    chatMessages[assistantIndex] = { role: "assistant", text: response || "(empty)", meta };
+    chatMessages[assistantIndex] = { 
+        role: "assistant", 
+        text: response || "(empty)", 
+        meta,
+        trajectory: data?.retrieval_trajectory
+    };
     renderChat();
     const returnedSummary = String(data?.summary ?? "").trim();
     if (returnedSummary || data?.summarized) chatSummary = returnedSummary;
     if (Array.isArray(data?.messages) && data.messages.length) {
       chatCtxMessages = data.messages
-        .map((m) => ({ role: m?.role === "assistant" ? "assistant" : m?.role === "user" ? "user" : null, content: String(m?.content ?? m?.text ?? "") }))
+        .map((m) => ({ role: m?.role === "assistant" ? "assistant" : m?.role === "user" ? "user" : null, content: String(m?.content ?? m?.text ?? ""), sessionId: getSessionId() }))
         .filter((m) => m.role && m.content);
     } else {
-      chatCtxMessages = [...nextCtxMessages, { role: "assistant", content: response || "" }];
+      chatCtxMessages = [...nextCtxMessages, { role: "assistant", content: response || "", sessionId: getSessionId() }];
     }
   } catch (e) {
     chatMessages[assistantIndex] = { role: "assistant", text: `请求失败：${e.message || e}` };
     renderChat();
   }
+}
+
+async function fetchMemories(path = "/user") {
+  const tree = document.getElementById("memoryTree");
+  tree.textContent = "Loading...";
+  try {
+    const sid = getSessionId();
+    const data = await apiJson("GET", `/memories?path=${encodeURIComponent(path)}&sessionId=${sid}`);
+    tree.textContent = "";
+    if (!data.children || !data.children.length) {
+      tree.textContent = "(Empty directory)";
+      return;
+    }
+    
+    // Sort directories first
+    const sorted = data.children.sort((a, b) => {
+       if (a.type === "directory" && b.type !== "directory") return -1;
+       if (a.type !== "directory" && b.type === "directory") return 1;
+       return a.path.localeCompare(b.path);
+    });
+
+    for (const node of sorted) {
+      const row = document.createElement("div");
+      row.className = "memNode";
+      
+      const info = document.createElement("div");
+      info.className = "memPath";
+      const icon = node.type === "directory" ? "📁" : "📄";
+      info.textContent = `${icon} ${node.path.split("/").pop()}`;
+      info.title = node.path;
+      if (node.type === "directory") {
+        info.style.cursor = "pointer";
+        info.onclick = () => fetchMemories(node.path);
+      }
+      
+      const actions = document.createElement("div");
+      actions.className = "memActions";
+      
+      if (node.type !== "directory") {
+          const btnDel = document.createElement("button");
+          btnDel.className = "memBtn secondary";
+          btnDel.textContent = "X";
+          btnDel.title = "Delete";
+          btnDel.onclick = () => deleteMemory(node.path);
+          actions.appendChild(btnDel);
+      }
+      
+      row.appendChild(info);
+      row.appendChild(actions);
+      tree.appendChild(row);
+    }
+    
+    if (path !== "/user" && path !== "/") {
+        const row = document.createElement("div");
+        row.className = "memNode";
+        row.style.background = "rgba(255,255,255,0.05)";
+        const info = document.createElement("div");
+        info.className = "memPath";
+        info.textContent = "⬅ Back";
+        info.style.cursor = "pointer";
+        const parts = path.split("/");
+        parts.pop();
+        const upPath = parts.join("/") || "/user";
+        info.onclick = () => fetchMemories(upPath);
+        row.appendChild(info);
+        tree.prepend(row);
+    }
+
+  } catch (e) {
+    tree.textContent = `Error: ${e.message}`;
+  }
+}
+
+async function deleteMemory(path) {
+    if (!confirm(`Delete memory: ${path}?`)) return;
+    try {
+        await apiJson("DELETE", "/memories", { path, sessionId: getSessionId() });
+        const parts = path.split("/");
+        parts.pop();
+        fetchMemories(parts.join("/") || "/");
+    } catch (e) {
+        alert(e.message);
+    }
 }
 
 function newChat() {
@@ -493,9 +618,10 @@ document.getElementById("addCustomHeader").addEventListener("click", () => addCu
 document.getElementById("checkCfg").addEventListener("click", checkConnectivity);
 document.getElementById("reloadSkills").addEventListener("click", reloadSkills);
 document.getElementById("btnChoose").addEventListener("click", doChoose);
-document.getElementById("btnExtract").addEventListener("click", doExtract);
+  document.getElementById("btnExtract").addEventListener("click", doExtract);
+  document.getElementById("refreshMemories").addEventListener("click", () => fetchMemories());
 
-document.getElementById("menuBtn").addEventListener("click", openDrawer);
+  document.getElementById("menuBtn").addEventListener("click", openDrawer);
 document.getElementById("drawerClose").addEventListener("click", closeDrawer);
 document.getElementById("drawerBackdrop").addEventListener("click", closeDrawer);
 document.getElementById("newChatBtn").addEventListener("click", newChat);
@@ -517,4 +643,5 @@ document.addEventListener("keydown", (e) => {
 });
 
 newChat();
-reloadSkills();
+  reloadSkills();
+  fetchMemories();

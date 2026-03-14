@@ -2,7 +2,23 @@ import http from "node:http";
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import Busboy from "busboy";
-import { extractBytes } from "@kreuzberg/node";
+import { extractBytes } from "@kreuzberg/wasm";
+import { ContextManager } from "./context/manager.js";
+import { RetrievalResult, ContextNode } from "./context/types.js";
+import { extractAndSaveMemories } from "./context/memory_extractor.js";
+
+const contextManagers = new Map<string, ContextManager>();
+
+async function getContextManager(config: OpenAIConfig, sessionId?: string) {
+  const key = sessionId || "default";
+  let cm = contextManagers.get(key);
+  if (!cm) {
+    cm = new ContextManager(config, sessionId);
+    await cm.init();
+    contextManagers.set(key, cm);
+  }
+  return cm;
+}
 
 const corsHeaders: Record<string, string> = {
   "Access-Control-Allow-Origin": "*",
@@ -201,15 +217,16 @@ type ChosenSkill = {
   reason: string;
 };
 
-type OpenAIConfig = {
+export type OpenAIConfig = {
   apiKey: string;
   baseUrl: string;
   model: string;
+  embeddingModel?: string;
   defaultHeaders?: Record<string, string>;
   systemContent?: string;
 };
 
-type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
+type ChatHistoryMessage = { role: "user" | "assistant"; content: string; sessionId?: string };
 
 function headersFromRequest(req: http.IncomingMessage): Record<string, string> {
   const skip = new Set([
@@ -300,12 +317,14 @@ function getOpenAIConfigFromRequest(req: http.IncomingMessage): OpenAIConfig {
   const headerKey = String(req.headers["x-openai-api-key"] || "");
   const headerBase = String(req.headers["x-openai-base-url"] || "");
   const headerModel = String(req.headers["x-openai-model"] || "");
+  const headerEmbeddingModel = String(req.headers["x-openai-embedding-model"] || "");
   const headerDefaultHeaders = String(req.headers["x-openai-default-headers"] || "");
   const headerSystemContent = String(req.headers["x-openai-system-content"] || "");
 
   const apiKey = headerKey || String(process.env.OPENAI_API_KEY || "");
   const baseUrl = (headerBase || String(process.env.OPENAI_BASE_URL || "")).trim();
   const model = (headerModel || String(process.env.OPENAI_MODEL || "")).trim();
+  const embeddingModel = (headerEmbeddingModel || String(process.env.OPENAI_EMBEDDING_MODEL || "fast")).trim();
 
   let defaultHeaders: Record<string, string> | undefined;
   const rawDefaultHeaders = headerDefaultHeaders || process.env.OPENAI_DEFAULT_HEADERS;
@@ -334,7 +353,7 @@ function getOpenAIConfigFromRequest(req: http.IncomingMessage): OpenAIConfig {
   if (!baseUrl) throw new Error("OPENAI_BASE_URL is required");
   if (!model) throw new Error("OPENAI_MODEL is required");
 
-  return { apiKey, baseUrl, model, defaultHeaders, systemContent };
+  return { apiKey, baseUrl, model, embeddingModel, defaultHeaders, systemContent };
 }
 
 function parseCatalogMarkdown(md: string): Catalog {
@@ -370,7 +389,7 @@ function parseCatalogMarkdown(md: string): Catalog {
   return { list: [...byName.values()], byName, shadowed };
 }
 
-const AGENTS_DIR = path.resolve(process.cwd(), ".agents");
+const AGENTS_DIR = path.resolve(process.cwd(), "agent/skills");
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 const NODE_MODULES_DIR = path.resolve(process.cwd(), "node_modules");
 const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");
@@ -571,6 +590,19 @@ export function stripLeadingSkillAnnouncements(raw: string, skillsByName: Map<st
   return lines.slice(i).join("\n").trim();
 }
 
+function formatContext(nodes: ContextNode[]): string {
+  if (!nodes.length) return "";
+  const lines = ["[相关上下文/记忆]"];
+  for (const node of nodes) {
+    lines.push(`- [${node.type}] ${node.path} (Score: ${node.score?.toFixed(2)})`);
+    lines.push(`  摘要: ${node.summary}`);
+    if (node.level === "L2" && node.content) {
+      lines.push(`  详情: ${node.content.slice(0, 500)}...`); // Truncate L2
+    }
+  }
+  return lines.join("\n");
+}
+
 async function runWithRouting(
   config: OpenAIConfig,
   args: { query?: string; messages?: ChatHistoryMessage[] | null; summary?: string | null; doc?: DocumentContext | null },
@@ -593,73 +625,112 @@ async function runWithRouting(
   const compressed = await compressChatHistory(config, normalized, summaryIn);
   const summary = String(compressed.summary || "").trim();
 
+  // Retrieve context
+  const sessionId = args.messages?.[0]?.sessionId || undefined;
+  const cm = await getContextManager(config, sessionId);
   const lastUser = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
+  const retrieval = await cm.search(lastUser, { maxResults: 3 });
+  const contextText = formatContext(retrieval.nodes);
+
   const routingDocSnippet = doc?.content ? doc.content.slice(0, 2000) : "";
   const routingParts = [
     lastUser,
     summary ? `\n\n[对话摘要]\n${summary}` : "",
     compressed.messages.length ? `\n\n[最近对话]\n${buildTranscript(compressed.messages.slice(-8), 3000)}` : "",
     doc ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
+    contextText ? `\n\n${contextText}` : "",
   ].filter(Boolean);
   const chosen = await chooseSkill(config, routingParts.join(""));
+
+  const extraFields = {
+    retrieval_trajectory: retrieval.trajectory,
+    retrieved_nodes: retrieval.nodes.map(n => ({ path: n.path, type: n.type, score: n.score })),
+  };
 
   if (chosen.skill === "none") {
     const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
       { role: "system" as const, content: "你是一个有帮助的助手。" },
       ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
+      ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
       ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
     const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-    const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
-    return {
-      chosen,
-      skill: null,
-      used_skills: [],
-      response: content,
-      summary,
-      summarized: compressed.summarized,
-      messages: [...compressed.messages, { role: "assistant", content }],
-    };
-  }
-
-  const meta = catalog.byName.get(chosen.skill) || null;
-  if (!meta) {
-    const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-      { role: "system" as const, content: "你是一个有帮助的助手。" },
-      ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
-      ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
-    ];
-    const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-    const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
-    return {
-      chosen,
-      skill: null,
-      used_skills: [],
-      response: content,
-      summary,
-      summarized: compressed.summarized,
-      messages: [...compressed.messages, { role: "assistant", content }],
-    };
-  }
-
-  const skillText = await fetchSkillText(meta.path);
-  const systemContent = ["你是一个具备工具/技能注入能力的助手。以下内容是当前选中的 Skill，必须遵循。", skillText].join("\n\n");
-  const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
-    { role: "system" as const, content: systemContent },
-    ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
-    ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
-  ];
-  const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
   const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+  
+  // Async memory extraction
+  void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+  
+  // Async session persistence
+  void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+
   return {
     chosen,
-    skill: { name: meta.name, description: meta.description, path: meta.path, priority_group: meta.priority_group },
-    used_skills: [meta.name],
+    skill: null,
+    used_skills: [],
     response: content,
     summary,
     summarized: compressed.summarized,
     messages: [...compressed.messages, { role: "assistant", content }],
+    ...extraFields,
   };
+}
+
+const meta = catalog.byName.get(chosen.skill) || null;
+if (!meta) {
+  const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+    { role: "system" as const, content: "你是一个有帮助的助手。" },
+    ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
+    ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
+    ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
+  ];
+  const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+  const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+
+  // Async memory extraction
+  void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+
+  // Async session persistence
+  void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+
+  return {
+    chosen,
+    skill: null,
+    used_skills: [],
+    response: content,
+    summary,
+    summarized: compressed.summarized,
+    messages: [...compressed.messages, { role: "assistant", content }],
+    ...extraFields,
+  };
+}
+
+const skillText = await fetchSkillText(meta.path);
+const systemContent = ["你是一个具备工具/技能注入能力的助手。以下内容是当前选中的 Skill，必须遵循。", skillText].join("\n\n");
+const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
+  { role: "system" as const, content: systemContent },
+  ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
+  ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
+  ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
+];
+const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+
+// Async memory extraction
+void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+
+// Async session persistence
+void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+
+return {
+  chosen,
+  skill: { name: meta.name, description: meta.description, path: meta.path, priority_group: meta.priority_group },
+  used_skills: [meta.name],
+  response: content,
+  summary,
+  summarized: compressed.summarized,
+  messages: [...compressed.messages, { role: "assistant", content }],
+  ...extraFields,
+};
 }
 
 async function parseMultipart(req: http.IncomingMessage, maxBytes: number) {
@@ -719,7 +790,8 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
       data: file.data,
     });
     if (!mimeType) throw new Error("mime_type is required");
-    const result = await extractBytes(file.data, mimeType);
+    const uint8Array = new Uint8Array(file.data);
+    const result = await extractBytes(uint8Array, mimeType);
     return sendJson(res, 200, { filename: file.filename, mime_type: mimeType, result });
   }
 
@@ -742,7 +814,8 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
       data,
     });
     if (!mimeType) throw new Error("mime_type is required");
-    const result = await extractBytes(data, mimeType);
+    const uint8Array = new Uint8Array(data);
+    const result = await extractBytes(uint8Array, mimeType);
     return sendJson(res, 200, { filename, mime_type: mimeType, result });
   }
 
@@ -842,15 +915,102 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     }
 
     if (req.method === "GET" && url.pathname === "/") {
+    return sendJson(res, 200, {
+      ok: true,
+      endpoints: {
+        skills: { method: "GET", path: "/skills" },
+        choose: { method: "POST", path: "/choose", body: { query: "..." } },
+        run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file+mime_type)" },
+        documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data | application/json(base64)" },
+        memories: { method: "GET,POST,DELETE", path: "/memories" },
+      },
+    });
+  }
+
+  if (req.method === "GET" && url.pathname === "/memories") {
+      const config = getOpenAIConfigFromRequest(req);
+      const sessionId = url.searchParams.get("sessionId") || undefined;
+      const cm = await getContextManager(config, sessionId);
+      let path = url.searchParams.get("path") || "/user";
+      const tree = url.searchParams.get("tree");
+
+      // Security: Only allow access to /user path
+      if (!path.startsWith("/user") && path !== "/") {
+        path = "/user";
+      }
+
+      if (tree === "true") {
+        const fullTree = cm.getTree();
+        // Filter tree to only show /user branch
+        // For session isolation, if we have a sessionId, the tree structure might be different
+        // But getTree returns the full VFS.
+        // If isolated, the VFS is already scoped or contains the specific user path.
+        // Let's just return the relevant branch.
+        const userBranch = fullTree.children?.find((c: any) => c.path.startsWith("/user"));
+        return sendJson(res, 200, userBranch || { path: "/user", children: [] });
+      }
+
+      const nodes = cm.list(path);
       return sendJson(res, 200, {
-        ok: true,
-        endpoints: {
-          skills: { method: "GET", path: "/skills" },
-          choose: { method: "POST", path: "/choose", body: { query: "..." } },
-          run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file+mime_type)" },
-          documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data | application/json(base64)" },
-        },
+        path,
+        children: nodes.map((n) => ({
+          path: n.path,
+          type: n.type,
+          level: n.level,
+          summary: n.summary,
+          hasContent: !!n.content,
+          metadata: n.metadata,
+          childCount: n.children?.length || 0,
+        })),
       });
+    }
+
+    if (req.method === "POST" && url.pathname === "/memories") {
+      const config = getOpenAIConfigFromRequest(req);
+      const body: any = await readJsonBody(req, 1024 * 1024);
+      const sessionId = body.sessionId || undefined;
+      const cm = await getContextManager(config, sessionId);
+
+      const path = String(body.path || "").trim();
+      const content = String(body.content || "").trim();
+      const summary = String(body.summary || "").trim();
+
+      if (!path || !content) {
+        return sendJson(res, 400, { error: "path and content are required" });
+      }
+
+      // Security: Only allow adding to /user path
+      if (!path.startsWith("/user/")) {
+        return sendJson(res, 403, { error: "Only memories under /user/ can be added" });
+      }
+
+      await cm.addMemory(path, content, summary);
+      return sendJson(res, 200, { ok: true, path });
+    }
+
+    if (req.method === "DELETE" && url.pathname === "/memories") {
+      const config = getOpenAIConfigFromRequest(req);
+      const body: any = await readJsonBody(req, 1024 * 1024);
+      const sessionId = body.sessionId || undefined;
+      const cm = await getContextManager(config, sessionId);
+
+      const path = String(body.path || "").trim();
+
+      if (!path) {
+        return sendJson(res, 400, { error: "path is required" });
+      }
+
+      // Security: Only allow deleting from /user path
+      if (!path.startsWith("/user/")) {
+        return sendJson(res, 403, { error: "Only memories under /user/ can be deleted" });
+      }
+
+      const deleted = await cm.deleteMemory(path);
+      if (!deleted) {
+        return sendJson(res, 404, { error: "Memory not found" });
+      }
+
+      return sendJson(res, 200, { ok: true, path });
     }
 
     if (req.method === "GET" && url.pathname === "/skills") {
@@ -899,7 +1059,8 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           data: file.data,
         });
         if (!mimeType) return sendJson(res, 400, { error: "mime_type is required" });
-        const extracted = await extractBytes(file.data, mimeType);
+        const uint8Array = new Uint8Array(file.data);
+        const extracted = await extractBytes(uint8Array, mimeType);
         const rawContent = String((extracted as any)?.content || "");
         const maxChars = 60000;
         const content = rawContent.slice(0, maxChars);

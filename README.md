@@ -1,6 +1,6 @@
 # Node.js/TypeScript 版 skill-router
 
-这个项目是一个“Skill 路由 + 执行”服务：从仓库的 `.agents/` 目录读取可用 skills（`CATALOG.md` + 各 `*/SKILL.md`），通过 OpenAI 兼容接口完成两件事：
+这个项目是一个“Skill 路由 + 执行”服务：从仓库的 `agent/skills/` 目录读取可用 skills（`CATALOG.md` + 各 `*/SKILL.md`），通过 OpenAI 兼容接口完成两件事：
 
 - 路由：根据用户输入选择最合适的 skill
 - 执行：把 skill 内容注入上下文后调用模型产出结果（可选上传文档作为额外上下文）
@@ -12,7 +12,7 @@
 - `POST /run`：路由选择 + 注入 skill 内容后调用模型（可选：上传文档，作为任务上下文一起分析）
 - `POST /documents/extract`：上传文档并使用 `@kreuzberg/node` 在本机提取
 
-skills 来源直接读取仓库里的 `.agents/` 目录（包含 `CATALOG.md` 和各个 `*/SKILL.md`）。
+skills 来源直接读取仓库里的 `agent/skills/` 目录（包含 `CATALOG.md` 和各个 `*/SKILL.md`）。
 
 ## 配置与传参
 

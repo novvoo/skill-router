@@ -11,7 +11,7 @@
     "build:vendor": "tsx scripts/build-vendor.ts"
   },
   "dependencies": {
-    "@kreuzberg/node": "^4.2.14",
+    "@kreuzberg/wasm": "^4.4.6",
     "busboy": "^1.6.0",
     "dompurify": "^3.2.7",
     "highlight.js": "^11.11.1",

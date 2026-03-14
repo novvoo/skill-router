@@ -356,7 +356,7 @@ function parseCatalogMarkdown(md) {
     }
     return { list: [...byName.values()], byName, shadowed };
 }
-const AGENTS_DIR = path.resolve(process.cwd(), ".agents");
+const AGENTS_DIR = path.resolve(process.cwd(), "agent/skills");
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 const NODE_MODULES_DIR = path.resolve(process.cwd(), "node_modules");
 const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");

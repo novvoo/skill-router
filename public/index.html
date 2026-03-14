@@ -261,6 +261,18 @@
       .drawerBody { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
       .section { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 14px; }
       .sectionTitle { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--mui-text); }
+      .memTree { font-size: 12px; margin-top: 10px; border: 1px solid var(--mui-divider); border-radius: 8px; overflow: hidden; }
+      .memNode { padding: 6px 8px; border-bottom: 1px solid var(--mui-divider); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+      .memNode:last-child { border-bottom: 0; }
+      .memNode:hover { background: rgba(255, 255, 255, 0.03); }
+      .memPath { flex: 1; word-break: break-all; font-family: monospace; }
+      .memMeta { color: var(--mui-text-3); font-size: 11px; }
+      .memActions { display: flex; gap: 4px; }
+      .memBtn { padding: 2px 6px; font-size: 10px; height: 20px; min-height: 0; }
+      .trajectory { margin-top: 6px; padding: 8px; background: rgba(0, 0, 0, 0.2); border-radius: 8px; font-size: 11px; font-family: monospace; color: var(--mui-text-2); display: none; }
+      .trajectory.show { display: block; }
+      .trajBtn { font-size: 11px; padding: 2px 8px; height: 24px; margin-left: 8px; background: rgba(255, 255, 255, 0.08); border: 0; color: var(--mui-text-2); border-radius: 4px; cursor: pointer; }
+      .trajBtn:hover { background: rgba(255, 255, 255, 0.12); }
     </style>
   </head>
   <body>
@@ -316,6 +328,10 @@
               <label>OPENAI_MODEL</label>
               <input id="model" type="text" autocomplete="off" placeholder="gpt-4.1-mini" />
             </div>
+            <div>
+              <label>EMBEDDING_MODEL</label>
+              <input id="embeddingModel" type="text" autocomplete="off" placeholder="fast" />
+            </div>
           </div>
           <div style="margin-top: 10px;">
             <label>OPENAI_BASE_URL</label>
@@ -347,6 +363,14 @@
             <button id="checkCfg" class="secondary">连通性自检</button>
           </div>
           <div id="cfgStatus" class="hint" style="margin-top: 8px;"></div>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">上下文与记忆 (Context & Memory)</div>
+          <div class="btns">
+            <button id="refreshMemories" class="secondary">刷新列表</button>
+          </div>
+          <div id="memoryTree" class="memTree"></div>
         </div>
 
         <div class="section">
