@@ -4,6 +4,19 @@ import hljs from "/vendor/highlight.js/es/common.js";
 
 const KEY = "skill-router:openai";
 const SESSION_KEY = "skill-router:session_id";
+const EMBEDDING_OPTIONS = new Set([
+  "",
+  "fast",
+  "balanced",
+  "quality",
+  "multilingual",
+  "compact",
+  "large",
+  "accurate",
+  "text-embedding-3-small",
+  "text-embedding-3-large",
+]);
+const HF_ENDPOINT_OPTIONS = new Set(["", "https://huggingface.co", "https://hf-mirror.com"]);
 
 function getSessionId() {
   let sid = localStorage.getItem(SESSION_KEY);
@@ -50,6 +63,16 @@ function highlightIn(el) {
 function loadCfg() {
   try {
     const local = JSON.parse(localStorage.getItem(KEY) || "{}") || {};
+    const rawEmbeddingModel = String(local.embeddingModel || "").trim();
+    const lowered = rawEmbeddingModel.toLowerCase();
+    let normalizedEmbeddingModel = rawEmbeddingModel;
+    if (lowered === "preset" || lowered === "kreuzberg") normalizedEmbeddingModel = "fast";
+    if (lowered.startsWith("preset:") || lowered.startsWith("preset/")) normalizedEmbeddingModel = lowered.slice(7).trim();
+    if (lowered.startsWith("kreuzberg:") || lowered.startsWith("kreuzberg/")) normalizedEmbeddingModel = lowered.slice(10).trim();
+    if (!EMBEDDING_OPTIONS.has(String(normalizedEmbeddingModel || ""))) normalizedEmbeddingModel = "";
+    local.embeddingModel = normalizedEmbeddingModel;
+    const rawHfEndpoint = String(local.hfEndpoint || "").trim();
+    local.hfEndpoint = HF_ENDPOINT_OPTIONS.has(rawHfEndpoint) ? rawHfEndpoint : "";
     return local;
   } catch {
     return {};
@@ -162,6 +185,7 @@ function cfgFromInputs() {
     baseUrl: document.getElementById("baseUrl").value.trim(),
     model: document.getElementById("model").value.trim(),
     embeddingModel: document.getElementById("embeddingModel").value.trim(),
+    hfEndpoint: document.getElementById("hfEndpoint").value.trim(),
     defaultHeaders: customHeadersFromTable(),
     systemContent: document.getElementById("systemContent").value.trim(),
   };
@@ -172,6 +196,7 @@ function fillInputs(cfg) {
   document.getElementById("baseUrl").value = cfg.baseUrl || "";
   document.getElementById("model").value = cfg.model || "";
   document.getElementById("embeddingModel").value = cfg.embeddingModel || "";
+  document.getElementById("hfEndpoint").value = cfg.hfEndpoint || "";
   fillCustomHeadersTable(cfg.defaultHeaders);
   document.getElementById("systemContent").value = cfg.systemContent || "";
 }
@@ -199,7 +224,18 @@ function headersFromCfg(cfg) {
   if (cfg.baseUrl) h["X-OpenAI-Base-URL"] = cfg.baseUrl;
   if (cfg.model) h["X-OpenAI-Model"] = cfg.model;
   if (cfg.embeddingModel) h["X-OpenAI-Embedding-Model"] = cfg.embeddingModel;
+  if (cfg.hfEndpoint) h["X-HF-Endpoint"] = cfg.hfEndpoint;
   return h;
+}
+
+function resolveApiUrl(url) {
+  const s = String(url || "");
+  if (/^https?:\/\//i.test(s)) return s;
+  if (!s.startsWith("/")) return s;
+  if (window.location.protocol !== "file:") return s;
+  const qs = new URLSearchParams(window.location.search);
+  const apiBase = String(qs.get("api") || "http://127.0.0.1:8080").trim().replace(/\/+$/, "");
+  return apiBase + s;
 }
 
 async function apiJson(method, url, body, cfg) {
@@ -207,7 +243,14 @@ async function apiJson(method, url, body, cfg) {
     "content-type": "application/json",
     ...headersFromCfg(cfg || loadCfg()),
   };
-  const resp = await fetch(url, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  const fullUrl = resolveApiUrl(url);
+  let resp;
+  try {
+    resp = await fetch(fullUrl, { method, headers, body: body ? JSON.stringify(body) : undefined });
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e || "Failed to fetch");
+    throw new Error(`网络错误：${msg}（${method} ${fullUrl}）`);
+  }
   const text = await resp.text();
   let data;
   try {
@@ -227,7 +270,14 @@ async function apiForm(method, url, form, cfg) {
   const headers = {
     ...headersFromCfg(cfg || loadCfg()),
   };
-  const resp = await fetch(url, { method, headers, body: form });
+  const fullUrl = resolveApiUrl(url);
+  let resp;
+  try {
+    resp = await fetch(fullUrl, { method, headers, body: form });
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e || "Failed to fetch");
+    throw new Error(`网络错误：${msg}（${method} ${fullUrl}）`);
+  }
   const text = await resp.text();
   let data;
   try {
@@ -438,7 +488,27 @@ async function sendChat() {
     const response = String(data?.response ?? "");
     const used = Array.isArray(data?.used_skills) ? data.used_skills.join(", ") : "";
     const chosen = data?.chosen?.skill ? String(data.chosen.skill) : "";
-    const meta = chosen ? `chosen: ${chosen}${used ? ` · used: ${used}` : ""}` : used ? `used: ${used}` : "";
+    const chatModel = data?.models?.chat ? String(data.models.chat) : "";
+    const emb = data?.models?.embedding || null;
+    const mem = data?.memory || null;
+    const routeText = `route: ${chosen || "none"}`;
+    const skillsText = `skills: ${used || "none"}`;
+    const modelText = chatModel ? `model: ${chatModel}` : "model: (unknown)";
+    const embText =
+      emb && emb.provider === "kreuzberg"
+        ? `emb: kreuzberg/${String(emb.preset || "")}${emb.dimensions ? ` (${emb.dimensions})` : ""}`
+        : emb && emb.provider === "openai_compatible"
+          ? `emb: openai/${String(emb.model || "")}`
+          : emb && emb.model
+            ? `emb: ${String(emb.model)}`
+            : "emb: (unknown)";
+    const memText =
+      mem && mem.retrieval_called
+        ? `mem: ${mem.used_in_prompt ? "on" : "off"}${Number.isFinite(mem.retrieved_count) ? ` (${mem.retrieved_count})` : ""}`
+        : "mem: (unknown)";
+    const hfText = emb && emb.hf_endpoint ? `HF_ENDPOINT: ${String(emb.hf_endpoint)}` : "";
+    const metaParts = [routeText, skillsText, modelText, embText, memText, hfText].filter(Boolean);
+    const meta = metaParts.join(" · ");
     chatMessages[assistantIndex] = { 
         role: "assistant", 
         text: response || "(empty)", 
@@ -567,7 +637,14 @@ async function doExtract() {
   try {
     const form = new FormData();
     form.append("file", file, file.name);
-    const resp = await fetch("/documents/extract", { method: "POST", body: form });
+    const url = resolveApiUrl("/documents/extract");
+    let resp;
+    try {
+      resp = await fetch(url, { method: "POST", body: form });
+    } catch (e) {
+      const msg = e?.message ? String(e.message) : String(e || "Failed to fetch");
+      throw new Error(`网络错误：${msg}（POST ${url}）`);
+    }
     const text = await resp.text();
     let data;
     try {
@@ -579,6 +656,129 @@ async function doExtract() {
     out.textContent = pretty({ filename: data.filename, result: { ...data.result, content: String(data?.result?.content || "").slice(0, 2000) } });
   } catch (e) {
     out.textContent = pretty({ error: e.message, detail: e.data || null });
+  }
+}
+
+let embeddingsPollTimer = null;
+
+function renderEmbeddingsStatus(data) {
+  const hint = document.getElementById("embeddingsHint");
+  const list = document.getElementById("embeddingsList");
+  if (!hint || !list) return;
+
+  const cacheDir = String(data?.cache_dir || "");
+  const hfEndpoint = data?.hf_endpoint ? String(data.hf_endpoint) : "";
+  const endpointText = hfEndpoint ? hfEndpoint : "(默认 huggingface.co)";
+  hint.textContent = cacheDir ? `Cache: ${cacheDir} · HF_ENDPOINT: ${endpointText}` : `HF_ENDPOINT: ${endpointText}`;
+
+  const presets = Array.isArray(data?.presets) ? data.presets : [];
+  list.textContent = "";
+  if (!presets.length) {
+    list.textContent = "(empty)";
+    return;
+  }
+
+  for (const p of presets) {
+    const preset = String(p?.preset || "");
+    const modelName = p?.model_name ? String(p.model_name) : "";
+    const dims = Number.isFinite(Number(p?.dimensions)) ? Number(p.dimensions) : null;
+    const status = String(p?.status || "not_downloaded");
+    const error = p?.error ? String(p.error) : "";
+    const logTail = p?.log_tail ? String(p.log_tail) : "";
+
+    const row = document.createElement("div");
+    row.className = "memNode";
+
+    const left = document.createElement("div");
+    left.className = "memPath";
+    left.textContent = `${preset}${modelName ? ` · ${modelName}` : ""}${dims ? ` · ${dims}d` : ""}`;
+
+    const actions = document.createElement("div");
+    actions.className = "memActions";
+
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    if (status === "downloaded") pill.classList.add("ok");
+    else if (status === "downloading") pill.classList.add("warn");
+    else if (status === "error") pill.classList.add("err");
+    else pill.classList.add("muted");
+    pill.textContent =
+      status === "downloaded"
+        ? "已下载"
+        : status === "downloading"
+          ? "下载中…"
+          : status === "error"
+            ? "失败"
+            : "未下载";
+    const tipParts = [];
+    if (error) tipParts.push(error);
+    if (logTail) tipParts.push(logTail);
+    if (tipParts.length) pill.title = tipParts.join("\n\n");
+    actions.appendChild(pill);
+
+    const btn = document.createElement("button");
+    btn.className = "memBtn secondary";
+    btn.textContent = status === "downloaded" ? "重新下载" : "下载";
+    btn.disabled = status === "downloading";
+    btn.onclick = () => void triggerEmbeddingDownload(preset, status === "downloaded");
+    actions.appendChild(btn);
+
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+async function refreshEmbeddingsStatus() {
+  const hint = document.getElementById("embeddingsHint");
+  const list = document.getElementById("embeddingsList");
+  if (!hint || !list) return;
+  hint.textContent = "Loading...";
+  try {
+    const cfg = loadCfg();
+    const data = await apiJson("GET", "/embeddings/status", null, cfg);
+    renderEmbeddingsStatus(data);
+    const presets = Array.isArray(data?.presets) ? data.presets : [];
+    const anyDownloading = presets.some((p) => String(p?.status || "") === "downloading");
+    if (!anyDownloading && embeddingsPollTimer) {
+      clearInterval(embeddingsPollTimer);
+      embeddingsPollTimer = null;
+    }
+  } catch (e) {
+    hint.textContent = `加载失败：${e.message || e}`;
+    list.textContent = "";
+    if (embeddingsPollTimer) {
+      clearInterval(embeddingsPollTimer);
+      embeddingsPollTimer = null;
+    }
+  }
+}
+
+async function triggerEmbeddingDownload(preset, force = false) {
+  const hint = document.getElementById("embeddingsHint");
+  if (!hint) return;
+  try {
+    const cfg = loadCfg();
+    const fromArg = String(preset || "").trim();
+    const fromSelect = String(document.getElementById("embeddingModel")?.value || "").trim();
+    const finalPreset = (fromArg || fromSelect).trim().toLowerCase();
+    const data = await apiJson(
+      "POST",
+      "/embeddings/download",
+      { preset: finalPreset, ...(force ? { force: true } : {}), ...(cfg.hfEndpoint ? { hf_endpoint: cfg.hfEndpoint } : {}) },
+      cfg,
+    );
+    if (data?.job?.status === "downloading" || data?.status === "downloading") {
+      hint.textContent = `已触发下载：${finalPreset || "(empty)"}`;
+      if (!embeddingsPollTimer) {
+        embeddingsPollTimer = setInterval(() => void refreshEmbeddingsStatus(), 1500);
+      }
+    } else {
+      hint.textContent = `状态：${String((data?.job?.status || data?.status) ?? "unknown")}`;
+    }
+    await refreshEmbeddingsStatus();
+  } catch (e) {
+    hint.textContent = `触发失败：${e.message || e}`;
   }
 }
 
@@ -620,6 +820,7 @@ document.getElementById("reloadSkills").addEventListener("click", reloadSkills);
 document.getElementById("btnChoose").addEventListener("click", doChoose);
   document.getElementById("btnExtract").addEventListener("click", doExtract);
   document.getElementById("refreshMemories").addEventListener("click", () => fetchMemories());
+  document.getElementById("refreshEmbeddings").addEventListener("click", () => void refreshEmbeddingsStatus());
 
   document.getElementById("menuBtn").addEventListener("click", openDrawer);
 document.getElementById("drawerClose").addEventListener("click", closeDrawer);
@@ -645,3 +846,4 @@ document.addEventListener("keydown", (e) => {
 newChat();
   reloadSkills();
   fetchMemories();
+  refreshEmbeddingsStatus();

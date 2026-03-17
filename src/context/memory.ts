@@ -65,7 +65,11 @@ export class MemoryManager {
           this.vfs.mount(node.path, node);
         }
       }
-    } catch (error) {
+    } catch (error: any) {
+      if (error?.code === "ENOENT") {
+        // Directory doesn't exist, which is fine for new sessions
+        return;
+      }
       console.error(`Failed to load directory ${fsPath}:`, error);
     }
   }

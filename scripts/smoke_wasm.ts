@@ -1,12 +1,8 @@
-import { extractBytes, initWasm } from "@kreuzberg/wasm";
+import { extractBytes } from "@kreuzberg/node";
 
 async function test() {
   try {
-    console.log("Initializing WASM...");
-    await initWasm();
-    console.log("WASM initialized.");
-
-    const text = "Hello world. This is a smoke test for @kreuzberg/wasm.";
+    const text = "Hello world. This is a smoke test for @kreuzberg/node.";
     const buffer = Buffer.from(text, "utf-8");
     const uint8Array = new Uint8Array(buffer);
     
@@ -33,3 +29,4 @@ async function test() {
 }
 
 test();
+

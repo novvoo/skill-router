@@ -1,25 +1,12 @@
 import http from "node:http";
-import fs from "node:fs/promises";
-import { fileURLToPath } from "node:url";
-import { initWasm } from "@kreuzberg/wasm";
+import path from "node:path";
 import { handleRequest } from "./handler.js";
+import { getOnnxRuntimePath } from "./utils.js";
 
-// Polyfill fetch for file:// URLs to make wasm-pack glue code work in Node.js
-const originalFetch = global.fetch;
-// @ts-ignore
-global.fetch = async (url: string | URL, options?: any) => {
-    const urlString = url.toString();
-    if (urlString.startsWith("file://")) {
-        const filePath = fileURLToPath(urlString);
-        const buffer = await fs.readFile(filePath);
-        // @ts-ignore
-        return new Response(buffer, {
-            status: 200,
-            headers: { "Content-Type": "application/wasm" },
-        });
-    }
-    return originalFetch(url, options);
-};
+// Configure ONNX Runtime path for Kreuzberg
+const onnxPath = getOnnxRuntimePath();
+process.env.ORT_DYLIB_PATH = onnxPath;
+console.log(`Configured ORT_DYLIB_PATH: ${onnxPath}`);
 
 const host = "127.0.0.1";
 const startPort = Number(process.env.PORT || "8080") || 8080;
@@ -35,9 +22,6 @@ function listen(server: http.Server, port: number) {
 }
 
 async function main() {
-  // Initialize WASM
-  await initWasm();
-  
   const server = http.createServer((req, res) => {
     void handleRequest(req, res);
   });

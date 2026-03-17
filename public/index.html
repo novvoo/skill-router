@@ -45,7 +45,7 @@
       input, textarea, select {
         width: 100%;
         box-sizing: border-box;
-        background: transparent;
+        background: rgba(0, 0, 0, 0.18);
         color: var(--mui-text);
         border: 1px solid rgba(255, 255, 255, 0.23);
         border-radius: 10px;
@@ -53,6 +53,10 @@
         outline: none;
         transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
       }
+      select { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.18); }
+      select:hover { background: rgba(0, 0, 0, 0.36); }
+      select:focus { background: rgba(0, 0, 0, 0.40); }
+      select option { background: #141414; color: var(--mui-text); }
       input::placeholder, textarea::placeholder { color: rgba(255, 255, 255, 0.45); }
       input:hover, textarea:hover, select:hover { border-color: rgba(255, 255, 255, 0.4); }
       input:focus, textarea:focus, select:focus { border-color: var(--mui-primary); box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
@@ -96,6 +100,9 @@
       .hdrRmBtn.secondary { border-color: rgba(255, 255, 255, 0.18); }
       .skillsTable th, .skillsTable td { padding: 6px 8px; font-size: 11px; line-height: 1.25; }
       .skillsTable th { font-size: 11px; }
+      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.16); font-size: 11px; line-height: 1.6; }
+      .muted { color: rgba(255, 255, 255, 0.45); }
+      .warn { color: #ffb74d; }
 
       .app { min-height: 100vh; display: flex; flex-direction: column; }
       .appbar {
@@ -328,10 +335,6 @@
               <label>OPENAI_MODEL</label>
               <input id="model" type="text" autocomplete="off" placeholder="gpt-4.1-mini" />
             </div>
-            <div>
-              <label>EMBEDDING_MODEL</label>
-              <input id="embeddingModel" type="text" autocomplete="off" placeholder="fast" />
-            </div>
           </div>
           <div style="margin-top: 10px;">
             <label>OPENAI_BASE_URL</label>
@@ -363,6 +366,40 @@
             <button id="checkCfg" class="secondary">连通性自检</button>
           </div>
           <div id="cfgStatus" class="hint" style="margin-top: 8px;"></div>
+        </div>
+
+        <div class="section">
+          <div class="sectionTitle">Embeddings (Kreuzberg) 下载</div>
+          <div class="row">
+            <div>
+              <label>EMBEDDING_MODEL</label>
+              <select id="embeddingModel" autocomplete="off">
+                <option value="">(跟随服务端默认)</option>
+                <option value="fast">fast (Kreuzberg preset)</option>
+                <option value="balanced">balanced (Kreuzberg preset)</option>
+                <option value="quality">quality (Kreuzberg preset)</option>
+                <option value="multilingual">multilingual (Kreuzberg preset)</option>
+                <option value="compact">compact (Kreuzberg preset)</option>
+                <option value="large">large (Kreuzberg preset)</option>
+                <option value="accurate">accurate (Kreuzberg preset)</option>
+                <option value="text-embedding-3-small">text-embedding-3-small (OpenAI compatible)</option>
+                <option value="text-embedding-3-large">text-embedding-3-large (OpenAI compatible)</option>
+              </select>
+            </div>
+            <div>
+              <label>HF_ENDPOINT</label>
+              <select id="hfEndpoint" autocomplete="off">
+                <option value="">(跟随服务端默认)</option>
+                <option value="https://huggingface.co">huggingface.co</option>
+                <option value="https://hf-mirror.com">hf-mirror.com</option>
+              </select>
+            </div>
+          </div>
+          <div class="btns">
+            <button id="refreshEmbeddings" class="secondary">刷新状态</button>
+          </div>
+          <div id="embeddingsHint" class="hint" style="margin-top: 8px;"></div>
+          <div id="embeddingsList" class="memTree" style="margin-top: 10px;"></div>
         </div>
 
         <div class="section">

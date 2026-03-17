@@ -1,11 +1,25 @@
 import path from "node:path";
 import { readFile } from "node:fs/promises";
 import Busboy from "busboy";
-import { extractBytes } from "@kreuzberg/node";
+import { extractBytes, getEmbeddingPreset } from "@kreuzberg/node";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { ContextManager } from "./context/manager.js";
+import { extractAndSaveMemories } from "./context/memory_extractor.js";
+const contextManagers = new Map();
+async function getContextManager(config, sessionId) {
+    const key = sessionId || "default";
+    let cm = contextManagers.get(key);
+    if (!cm) {
+        cm = new ContextManager(config, sessionId);
+        await cm.ensureLoaded();
+        contextManagers.set(key, cm);
+    }
+    return cm;
+}
 const corsHeaders = {
     "Access-Control-Allow-Origin": "*",
     "Access-Control-Allow-Methods": "GET,POST,OPTIONS",
-    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-OpenAI-API-Key,X-OpenAI-Base-URL,X-OpenAI-Model,X-OpenAI-Default-Headers,X-OpenAI-System-Content",
+    "Access-Control-Allow-Headers": "Content-Type,Authorization,X-OpenAI-API-Key,X-OpenAI-Base-URL,X-OpenAI-Model,X-OpenAI-Embedding-Model,X-OpenAI-Default-Headers,X-OpenAI-System-Content,X-HF-Endpoint",
 };
 function writeCorsHeaders(res) {
     for (const [k, v] of Object.entries(corsHeaders))
@@ -22,6 +36,258 @@ function sendText(res, status, contentType, body) {
     res.setHeader("Content-Type", contentType);
     writeCorsHeaders(res);
     res.end(body);
+}
+const EMBEDDING_PRESETS = ["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"];
+const embeddingJobs = new Map();
+const EMBEDDING_LOG_MAX = 200;
+const EMBEDDING_LOG_TAIL = 30;
+function getProcessingWarnings(result) {
+    const arr = Array.isArray(result?.processingWarnings) ? result.processingWarnings : [];
+    return arr
+        .map((w) => ({ source: w?.source, message: w?.message }))
+        .filter((w) => Boolean(String(w?.message || "").trim()));
+}
+function hasEmbeddingInitFailure(warnings) {
+    for (const w of warnings) {
+        if (String(w?.source || "").toLowerCase() !== "embedding")
+            continue;
+        const msg = String(w?.message || "");
+        if (!msg)
+            continue;
+        if (msg.includes("Failed to initialize embedding model"))
+            return msg;
+        if (msg.toLowerCase().includes("plugin error") && msg.toLowerCase().includes("embeddings"))
+            return msg;
+    }
+    return null;
+}
+function appendEmbeddingLog(job, message) {
+    const line = `[${new Date().toISOString()}] ${message}`;
+    job.logs.push(line);
+    if (job.logs.length > EMBEDDING_LOG_MAX)
+        job.logs.splice(0, job.logs.length - EMBEDDING_LOG_MAX);
+    console.log(line);
+}
+function normalizeHfEndpoint(raw) {
+    const v0 = String(raw || "").trim();
+    if (!v0)
+        return null;
+    const v = v0.replace(/^['"`\s]+|['"`\s]+$/g, "").replace(/\/+$/g, "");
+    if (!v)
+        return null;
+    if (v === "https://huggingface.co")
+        return v;
+    if (v === "https://hf-mirror.com")
+        return v;
+    return null;
+}
+function resolveKreuzbergCacheDir() {
+    const cacheDirFromEnv = String(process.env.KREUZBERG_CACHE_DIR || "").trim();
+    if (cacheDirFromEnv)
+        return path.resolve(process.cwd(), cacheDirFromEnv);
+    const preferred = path.resolve(process.cwd(), ".cache/models");
+    const legacy = path.resolve(process.cwd(), ".cache");
+    try {
+        if (existsSync(preferred))
+            return preferred;
+        if (existsSync(legacy)) {
+            const hasModels = readdirSync(legacy, { withFileTypes: true }).some((d) => d.isDirectory() && d.name.startsWith("models--"));
+            if (hasModels)
+                return legacy;
+        }
+    }
+    catch {
+    }
+    return preferred;
+}
+function hubCacheFromCacheDir(cacheDir) {
+    const base = String(cacheDir || "").trim().toLowerCase().endsWith(`${path.sep}models`) ? path.dirname(cacheDir) : cacheDir;
+    const root = path.resolve(base);
+    return path.join(root, "huggingface", "hub");
+}
+function setHfCacheEnvForCacheDir(cacheDir) {
+    const base = String(cacheDir || "").trim().toLowerCase().endsWith(`${path.sep}models`) ? path.dirname(cacheDir) : cacheDir;
+    const root = path.resolve(base);
+    process.env.XDG_CACHE_HOME = path.join(root, "xdg-cache");
+    process.env.HF_HOME = path.join(root, "hf-home");
+    const hubCache = path.join(root, "huggingface", "hub");
+    process.env.HF_HUB_CACHE = hubCache;
+    process.env.HUGGINGFACE_HUB_CACHE = hubCache;
+    return hubCache;
+}
+function repairHfHubCache(cacheDir) {
+    if (!existsSync(cacheDir))
+        return;
+    const repoDirs = readdirSync(cacheDir, { withFileTypes: true })
+        .filter((d) => d.isDirectory() && d.name.startsWith("models--"))
+        .map((d) => path.join(cacheDir, d.name));
+    for (const repoDir of repoDirs) {
+        const refPath = path.join(repoDir, "refs", "main");
+        if (!existsSync(refPath)) {
+            const hasFlatLayout = existsSync(path.join(repoDir, "config.json")) && existsSync(path.join(repoDir, "tokenizer.json"));
+            if (hasFlatLayout) {
+                const commitHash = "0000000000000000000000000000000000000000";
+                mkdirSync(path.dirname(refPath), { recursive: true });
+                writeFileSync(refPath, commitHash + "\n");
+                const snapshotDir = path.join(repoDir, "snapshots", commitHash);
+                mkdirSync(snapshotDir, { recursive: true });
+            }
+        }
+        if (!existsSync(refPath))
+            continue;
+        const commitHash = String(readFileSync(refPath, "utf-8")).trim();
+        if (!commitHash)
+            continue;
+        const snapshotDir = path.join(repoDir, "snapshots", commitHash);
+        if (existsSync(snapshotDir)) {
+            const maybeCopy = (rel) => {
+                const src = path.join(repoDir, rel);
+                const dst = path.join(snapshotDir, rel);
+                if (!existsSync(src))
+                    return;
+                if (existsSync(dst))
+                    return;
+                mkdirSync(path.dirname(dst), { recursive: true });
+                copyFileSync(src, dst);
+            };
+            for (const rel of ["config.json", "tokenizer.json", "tokenizer_config.json", "special_tokens_map.json", "vocab.txt"]) {
+                maybeCopy(rel);
+            }
+            const onnxDir = path.join(repoDir, "onnx");
+            if (existsSync(onnxDir)) {
+                const snapshotOnnxDir = path.join(snapshotDir, "onnx");
+                mkdirSync(snapshotOnnxDir, { recursive: true });
+                for (const ent of readdirSync(onnxDir, { withFileTypes: true })) {
+                    if (!ent.isFile())
+                        continue;
+                    const src = path.join(onnxDir, ent.name);
+                    const dst = path.join(snapshotOnnxDir, ent.name);
+                    if (!existsSync(dst))
+                        copyFileSync(src, dst);
+                }
+            }
+        }
+        const pointerPath = path.join(repoDir, "snapshots", commitHash, "onnx", "model.onnx");
+        if (existsSync(pointerPath))
+            continue;
+        const blobsDir = path.join(repoDir, "blobs");
+        if (!existsSync(blobsDir))
+            continue;
+        const blobCandidates = readdirSync(blobsDir, { withFileTypes: true })
+            .filter((d) => d.isFile())
+            .map((d) => path.join(blobsDir, d.name))
+            .filter((p) => {
+            const ext = path.extname(p).toLowerCase();
+            return ext !== ".lock" && ext !== ".part";
+        });
+        if (blobCandidates.length === 0)
+            continue;
+        let bestBlob = blobCandidates[0];
+        let bestSize = -1;
+        for (const p of blobCandidates) {
+            try {
+                const size = statSync(p).size;
+                if (size > bestSize) {
+                    bestSize = size;
+                    bestBlob = p;
+                }
+            }
+            catch {
+            }
+        }
+        mkdirSync(path.dirname(pointerPath), { recursive: true });
+        copyFileSync(bestBlob, pointerPath);
+    }
+}
+function hasHfModelFiles(cacheDir, modelName) {
+    const hasModelAt = (p) => {
+        if (!existsSync(path.join(p, "config.json")))
+            return false;
+        if (!existsSync(path.join(p, "tokenizer.json")))
+            return false;
+        const onnxDir = path.join(p, "onnx");
+        if (!existsSync(onnxDir))
+            return false;
+        try {
+            return readdirSync(onnxDir, { withFileTypes: true }).some((ent) => ent.isFile() && ent.name.toLowerCase().endsWith(".onnx"));
+        }
+        catch {
+            return false;
+        }
+    };
+    const candidates = [];
+    for (const modelCacheDir of modelCacheDirCandidates(cacheDir, modelName)) {
+        const snapshotsDir = path.join(modelCacheDir, "snapshots");
+        if (existsSync(snapshotsDir)) {
+            try {
+                for (const s of readdirSync(snapshotsDir))
+                    candidates.push(path.join(snapshotsDir, s));
+            }
+            catch {
+            }
+        }
+        candidates.push(modelCacheDir);
+    }
+    return candidates.some(hasModelAt);
+}
+function hasAnyHfModelFiles(cacheDir) {
+    let ents = [];
+    try {
+        ents = readdirSync(cacheDir, { withFileTypes: true });
+    }
+    catch {
+        return false;
+    }
+    const modelDirs = ents.filter((d) => d?.isDirectory?.() && String(d.name || "").startsWith("models--")).map((d) => path.join(cacheDir, d.name));
+    if (!modelDirs.length)
+        return false;
+    const hasModelAt = (p) => {
+        if (!existsSync(path.join(p, "config.json")))
+            return false;
+        if (!existsSync(path.join(p, "tokenizer.json")))
+            return false;
+        const onnxDir = path.join(p, "onnx");
+        if (!existsSync(onnxDir))
+            return false;
+        try {
+            return readdirSync(onnxDir, { withFileTypes: true }).some((ent) => ent.isFile() && ent.name.toLowerCase().endsWith(".onnx"));
+        }
+        catch {
+            return false;
+        }
+    };
+    for (const base of modelDirs) {
+        const snapshotsDir = path.join(base, "snapshots");
+        if (existsSync(snapshotsDir)) {
+            try {
+                for (const s of readdirSync(snapshotsDir)) {
+                    if (hasModelAt(path.join(snapshotsDir, s)))
+                        return true;
+                }
+            }
+            catch {
+            }
+        }
+        if (hasModelAt(base))
+            return true;
+    }
+    return false;
+}
+function modelCacheDirCandidates(cacheDir, modelName) {
+    const out = [];
+    const add = (rel) => {
+        const abs = path.resolve(cacheDir, rel);
+        const safeRel = path.relative(cacheDir, abs);
+        if (!safeRel || safeRel.startsWith("..") || path.isAbsolute(safeRel))
+            return;
+        out.push(abs);
+    };
+    const encoded = String(modelName || "").replace("/", "--");
+    add("models--" + encoded);
+    add("models--sentence-transformers--" + encoded);
+    add("models--sentence-transformers--" + encoded.toLowerCase());
+    add("models--" + encoded.toLowerCase());
+    return [...new Set(out)];
 }
 async function readRequestBody(req, maxBytes) {
     const chunks = [];
@@ -221,6 +487,8 @@ function headersFromRequest(req) {
             continue;
         if (key.startsWith("x-openai-"))
             continue;
+        if (key === "x-hf-endpoint")
+            continue;
         if (key.startsWith("access-control-"))
             continue;
         if (key === "x-forwarded-for" || key === "x-forwarded-proto" || key === "x-forwarded-host")
@@ -284,11 +552,15 @@ function getOpenAIConfigFromRequest(req) {
     const headerKey = String(req.headers["x-openai-api-key"] || "");
     const headerBase = String(req.headers["x-openai-base-url"] || "");
     const headerModel = String(req.headers["x-openai-model"] || "");
+    const headerEmbeddingModel = String(req.headers["x-openai-embedding-model"] || "");
     const headerDefaultHeaders = String(req.headers["x-openai-default-headers"] || "");
     const headerSystemContent = String(req.headers["x-openai-system-content"] || "");
+    const headerHfEndpoint = String(req.headers["x-hf-endpoint"] || "");
     const apiKey = headerKey || String(process.env.OPENAI_API_KEY || "");
     const baseUrl = (headerBase || String(process.env.OPENAI_BASE_URL || "")).trim();
     const model = (headerModel || String(process.env.OPENAI_MODEL || "")).trim();
+    const embeddingModel = (headerEmbeddingModel || String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")).trim();
+    const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint) || undefined;
     let defaultHeaders;
     const rawDefaultHeaders = headerDefaultHeaders || process.env.OPENAI_DEFAULT_HEADERS;
     if (rawDefaultHeaders) {
@@ -318,7 +590,7 @@ function getOpenAIConfigFromRequest(req) {
         throw new Error("OPENAI_BASE_URL is required");
     if (!model)
         throw new Error("OPENAI_MODEL is required");
-    return { apiKey, baseUrl, model, defaultHeaders, systemContent };
+    return { apiKey, baseUrl, model, embeddingModel, hfEndpoint, defaultHeaders, systemContent };
 }
 function parseCatalogMarkdown(md) {
     const skills = [];
@@ -468,6 +740,73 @@ function buildUserContent(query, doc) {
         return query;
     return `${query}\n${buildDocumentBlock(doc)}`;
 }
+function stripDocumentBlockFromUserContent(userContent) {
+    const s = String(userContent || "");
+    const i = s.indexOf("\n---\n用户上传的参考文档");
+    return (i >= 0 ? s.slice(0, i) : s).trim();
+}
+function stripDocumentBlocksForRouting(messages) {
+    return messages.map((m) => (m.role === "user" ? { ...m, content: stripDocumentBlockFromUserContent(m.content) } : m));
+}
+function isLikelyTestAddressQuery(query) {
+    const q = String(query || "").toLowerCase();
+    return /测试(地址|链接|环境|域名|url)|体验(地址|链接)|demo(地址|链接)?|test\s*(url|address|link)|staging|sandbox|预发|灰度|uat|qa|dev/.test(q);
+}
+function extractUrlsFromText(text) {
+    const s = String(text || "");
+    const urls = new Set();
+    const re = /(https?:\/\/[^\s"'<>]+)|((?:www\.)[^\s"'<>]+)|((?:[a-zA-Z0-9-]+\.)+[a-zA-Z]{2,}(?::\d{2,5})?(?:\/[^\s"'<>]*)?)/g;
+    for (const m of s.matchAll(re)) {
+        const raw = String(m[0] || "").trim();
+        const cleaned = raw.replace(/[),.;!?，。；！？】】》》]+$/g, "").replace(/^[【《(]+/g, "");
+        if (cleaned)
+            urls.add(cleaned);
+        if (urls.size >= 30)
+            break;
+    }
+    return [...urls];
+}
+function buildTestAddressResponseFromDocContent(docContent) {
+    const urls = extractUrlsFromText(docContent);
+    if (!urls.length) {
+        return "我在文档提取文本里没有找到可识别的链接/地址（如 http(s):// 或域名:端口）。文档可能没有提供测试地址；如果你确认文档里有，请把包含“测试地址”的那一页截图/原文粘贴出来，我再精确定位。";
+    }
+    const scored = urls
+        .map((u) => {
+        const lu = u.toLowerCase();
+        const score = (lu.includes("test") ? 3 : 0) +
+            (lu.includes("staging") ? 3 : 0) +
+            (lu.includes("sandbox") ? 3 : 0) +
+            (lu.includes("uat") ? 2 : 0) +
+            (lu.includes("qa") ? 2 : 0) +
+            (lu.includes("dev") ? 2 : 0) +
+            (lu.includes("pre") ? 1 : 0) +
+            (lu.includes("demo") ? 1 : 0);
+        return { url: u, score };
+    })
+        .sort((a, b) => b.score - a.score || a.url.localeCompare(b.url))
+        .map((x) => x.url);
+    const top = scored.slice(0, 15);
+    const lines = String(docContent || "").split(/\r?\n/).map((l) => l.trim()).filter(Boolean);
+    const context = top
+        .map((u) => {
+        const line = lines.find((l) => l.includes(u)) || "";
+        return line ? `- ${line}` : "";
+    })
+        .filter(Boolean)
+        .slice(0, 8);
+    return [
+        "文档里出现的链接/地址如下（是否为“测试地址”需结合文档上下文判断）：",
+        ...top.map((u) => `- ${u}`),
+        context.length ? "" : "",
+        context.length ? "相关原文行（便于判断用途）：" : "",
+        ...context,
+        "",
+        "如果你要找“测试环境/沙箱/预发”地址：优先看包含 test / staging / sandbox / uat / qa / dev 的链接，或紧邻“测试/沙箱/预发”等字样的行。",
+    ]
+        .filter(Boolean)
+        .join("\n");
+}
 function withDocumentInLastUserMessage(messages, doc) {
     if (!doc)
         return messages;
@@ -529,6 +868,19 @@ export function stripLeadingSkillAnnouncements(raw, skillsByName) {
     }
     return lines.slice(i).join("\n").trim();
 }
+function formatContext(nodes) {
+    if (!nodes.length)
+        return "";
+    const lines = ["[相关上下文/记忆]"];
+    for (const node of nodes) {
+        lines.push(`- [${node.type}] ${node.path} (Score: ${node.score?.toFixed(2)})`);
+        lines.push(`  摘要: ${node.summary}`);
+        if (node.level === "L2" && node.content) {
+            lines.push(`  详情: ${node.content.slice(0, 500)}...`); // Truncate L2
+        }
+    }
+    return lines.join("\n");
+}
 async function runWithRouting(config, args) {
     const catalog = await loadCatalog();
     const doc = args.doc || null;
@@ -548,23 +900,127 @@ async function runWithRouting(config, args) {
         throw new Error("invalid messages format");
     const compressed = await compressChatHistory(config, normalized, summaryIn);
     const summary = String(compressed.summary || "").trim();
-    const lastUser = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
+    // Retrieve context
+    const sessionId = args.messages?.[0]?.sessionId || undefined;
+    const cm = await getContextManager(config, sessionId);
+    const lastUserWithDoc = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
+    const lastUser = stripDocumentBlockFromUserContent(lastUserWithDoc);
+    const retrieval = await cm.search(lastUser, { maxResults: 3 });
+    const rawEmbeddingModel = String(config.embeddingModel || "").trim();
+    const lowerEmbeddingModel = rawEmbeddingModel.toLowerCase();
+    const presetSet = new Set(["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"]);
+    const normalizedPreset = lowerEmbeddingModel === "preset" || lowerEmbeddingModel === "kreuzberg"
+        ? "fast"
+        : lowerEmbeddingModel.startsWith("preset:") || lowerEmbeddingModel.startsWith("preset/")
+            ? lowerEmbeddingModel.slice(7).trim()
+            : lowerEmbeddingModel.startsWith("kreuzberg:") || lowerEmbeddingModel.startsWith("kreuzberg/")
+                ? lowerEmbeddingModel.slice(10).trim()
+                : lowerEmbeddingModel;
+    const embeddingUsesKreuzberg = presetSet.has(normalizedPreset);
+    const cacheDirFromEnv = String(process.env.KREUZBERG_CACHE_DIR || "").trim();
+    const embeddingCacheDir = path.resolve(process.cwd(), cacheDirFromEnv || ".cache/models");
+    const embeddingDims = (() => {
+        switch (normalizedPreset) {
+            case "fast":
+            case "compact":
+                return 384;
+            case "balanced":
+                return 768;
+            case "quality":
+            case "large":
+            case "accurate":
+            case "multilingual":
+                return 1024;
+            default:
+                return null;
+        }
+    })();
+    if (doc && isLikelyTestAddressQuery(lastUser)) {
+        const response = buildTestAddressResponseFromDocContent(doc.content);
+        void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: response }]);
+        void cm.persistSession([...compressed.messages, { role: "assistant", content: response }], summary);
+        return {
+            chosen: { skill: "none", confidence: 1.0, reason: "检测到“测试地址/链接”类问题，使用确定性链接抽取避免跑题" },
+            skill: null,
+            used_skills: [],
+            response,
+            summary,
+            summarized: compressed.summarized,
+            messages: [...compressed.messages, { role: "assistant", content: response }],
+            retrieval_trajectory: retrieval.trajectory,
+            retrieved_nodes: retrieval.nodes.map(n => ({ path: n.path, type: n.type, score: n.score })),
+            memory: { retrieval_called: true, retrieved_count: retrieval.nodes.length, used_in_prompt: false },
+            models: {
+                chat: config.model,
+                embedding: embeddingUsesKreuzberg
+                    ? {
+                        provider: "kreuzberg",
+                        model_type: "preset",
+                        preset: normalizedPreset,
+                        dimensions: embeddingDims,
+                        cache_dir: embeddingCacheDir,
+                        hf_endpoint: process.env.HF_ENDPOINT || null,
+                    }
+                    : {
+                        provider: "openai_compatible",
+                        model: rawEmbeddingModel || "text-embedding-3-small",
+                    },
+            },
+        };
+    }
+    const contextText = formatContext(retrieval.nodes);
     const routingDocSnippet = doc?.content ? doc.content.slice(0, 2000) : "";
+    const routingMessages = stripDocumentBlocksForRouting(compressed.messages);
     const routingParts = [
         lastUser,
         summary ? `\n\n[对话摘要]\n${summary}` : "",
-        compressed.messages.length ? `\n\n[最近对话]\n${buildTranscript(compressed.messages.slice(-8), 3000)}` : "",
+        routingMessages.length ? `\n\n[最近对话]\n${buildTranscript(routingMessages.slice(-8), 3000)}` : "",
         doc ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
+        contextText ? `\n\n${contextText}` : "",
     ].filter(Boolean);
     const chosen = await chooseSkill(config, routingParts.join(""));
+    const extraFields = {
+        retrieval_trajectory: retrieval.trajectory,
+        retrieved_nodes: retrieval.nodes.map(n => ({ path: n.path, type: n.type, score: n.score })),
+        memory: {
+            retrieval_called: true,
+            retrieved_count: retrieval.nodes.length,
+            used_in_prompt: Boolean(contextText),
+        },
+        models: {
+            chat: config.model,
+            embedding: embeddingUsesKreuzberg
+                ? {
+                    provider: "kreuzberg",
+                    model_type: "preset",
+                    preset: normalizedPreset,
+                    dimensions: embeddingDims,
+                    cache_dir: embeddingCacheDir,
+                    hf_endpoint: process.env.HF_ENDPOINT || null,
+                }
+                : {
+                    provider: "openai_compatible",
+                    model: rawEmbeddingModel || "text-embedding-3-small",
+                },
+        },
+    };
     if (chosen.skill === "none") {
+        const docPolicy = doc
+            ? "如果用户上传了参考文档：优先回答用户当前问题；除非用户明确要求“总结/概览/摘要”，否则不要对文档做整体总结；当用户询问地址/链接/URL（尤其测试地址、沙箱/预发环境）时，只能返回文档中真实出现的链接/域名，找不到就明确说明未提供。"
+            : "";
         const promptMessages = [
             { role: "system", content: "你是一个有帮助的助手。" },
+            ...(docPolicy ? [{ role: "system", content: docPolicy }] : []),
             ...(summary ? [{ role: "system", content: `对话摘要：\n${summary}` }] : []),
+            ...(contextText ? [{ role: "system", content: contextText }] : []),
             ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
         ];
         const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
         const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+        // Async memory extraction
+        void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+        // Async session persistence
+        void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
         return {
             chosen,
             skill: null,
@@ -573,17 +1029,27 @@ async function runWithRouting(config, args) {
             summary,
             summarized: compressed.summarized,
             messages: [...compressed.messages, { role: "assistant", content }],
+            ...extraFields,
         };
     }
     const meta = catalog.byName.get(chosen.skill) || null;
     if (!meta) {
+        const docPolicy = doc
+            ? "如果用户上传了参考文档：优先回答用户当前问题；除非用户明确要求“总结/概览/摘要”，否则不要对文档做整体总结；当用户询问地址/链接/URL（尤其测试地址、沙箱/预发环境）时，只能返回文档中真实出现的链接/域名，找不到就明确说明未提供。"
+            : "";
         const promptMessages = [
             { role: "system", content: "你是一个有帮助的助手。" },
+            ...(docPolicy ? [{ role: "system", content: docPolicy }] : []),
             ...(summary ? [{ role: "system", content: `对话摘要：\n${summary}` }] : []),
+            ...(contextText ? [{ role: "system", content: contextText }] : []),
             ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
         ];
         const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
         const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+        // Async memory extraction
+        void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+        // Async session persistence
+        void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
         return {
             chosen,
             skill: null,
@@ -592,17 +1058,27 @@ async function runWithRouting(config, args) {
             summary,
             summarized: compressed.summarized,
             messages: [...compressed.messages, { role: "assistant", content }],
+            ...extraFields,
         };
     }
     const skillText = await fetchSkillText(meta.path);
     const systemContent = ["你是一个具备工具/技能注入能力的助手。以下内容是当前选中的 Skill，必须遵循。", skillText].join("\n\n");
+    const docPolicy = doc
+        ? "如果用户上传了参考文档：优先回答用户当前问题；除非用户明确要求“总结/概览/摘要”，否则不要对文档做整体总结；当用户询问地址/链接/URL（尤其测试地址、沙箱/预发环境）时，只能返回文档中真实出现的链接/域名，找不到就明确说明未提供。"
+        : "";
     const promptMessages = [
         { role: "system", content: systemContent },
+        ...(docPolicy ? [{ role: "system", content: docPolicy }] : []),
         ...(summary ? [{ role: "system", content: `对话摘要：\n${summary}` }] : []),
+        ...(contextText ? [{ role: "system", content: contextText }] : []),
         ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
     const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
     const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+    // Async memory extraction
+    void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+    // Async session persistence
+    void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
     return {
         chosen,
         skill: { name: meta.name, description: meta.description, path: meta.path, priority_group: meta.priority_group },
@@ -611,6 +1087,7 @@ async function runWithRouting(config, args) {
         summary,
         summarized: compressed.summarized,
         messages: [...compressed.messages, { role: "assistant", content }],
+        ...extraFields,
     };
 }
 async function parseMultipart(req, maxBytes) {
@@ -664,7 +1141,8 @@ async function handleDocumentsExtract(req, res) {
         });
         if (!mimeType)
             throw new Error("mime_type is required");
-        const result = await extractBytes(file.data, mimeType);
+        const uint8Array = new Uint8Array(file.data);
+        const result = await extractBytes(uint8Array, mimeType);
         return sendJson(res, 200, { filename: file.filename, mime_type: mimeType, result });
     }
     if (ct.includes("application/json")) {
@@ -690,7 +1168,8 @@ async function handleDocumentsExtract(req, res) {
         });
         if (!mimeType)
             throw new Error("mime_type is required");
-        const result = await extractBytes(data, mimeType);
+        const uint8Array = new Uint8Array(data);
+        const result = await extractBytes(uint8Array, mimeType);
         return sendJson(res, 200, { filename, mime_type: mimeType, result });
     }
     throw new Error("unsupported Content-Type");
@@ -797,8 +1276,260 @@ export async function handleRequest(req, res) {
                     choose: { method: "POST", path: "/choose", body: { query: "..." } },
                     run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file+mime_type)" },
                     documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data | application/json(base64)" },
+                    memories: { method: "GET,POST,DELETE", path: "/memories" },
+                    embeddings_status: { method: "GET", path: "/embeddings/status" },
+                    embeddings_download: { method: "POST", path: "/embeddings/download", body: { preset: "fast", hf_endpoint: "https://hf-mirror.com", force: false } },
                 },
             });
+        }
+        if (req.method === "GET" && url.pathname === "/embeddings/status") {
+            const cacheDir = resolveKreuzbergCacheDir();
+            const hubCache = hubCacheFromCacheDir(cacheDir);
+            try {
+                repairHfHubCache(cacheDir);
+            }
+            catch {
+            }
+            try {
+                repairHfHubCache(hubCache);
+            }
+            catch {
+            }
+            const hfEndpoint = process.env.HF_ENDPOINT || null;
+            const anyDownloaded = hasAnyHfModelFiles(cacheDir) || hasAnyHfModelFiles(hubCache);
+            const presets = EMBEDDING_PRESETS.map((preset) => {
+                const info = getEmbeddingPreset(preset);
+                const modelName = info?.modelName ? String(info.modelName) : null;
+                const dimensions = Number.isFinite(Number(info?.dimensions)) ? Number(info.dimensions) : null;
+                const downloaded = modelName
+                    ? hasHfModelFiles(cacheDir, modelName) || hasHfModelFiles(hubCache, modelName) || anyDownloaded
+                    : anyDownloaded;
+                const existing = embeddingJobs.get(preset);
+                let status = downloaded ? "downloaded" : "not_downloaded";
+                let error;
+                if (existing) {
+                    status = existing.status;
+                    error = existing.error;
+                    if (downloaded && status !== "downloading") {
+                        status = "downloaded";
+                        error = undefined;
+                        existing.status = "downloaded";
+                        existing.error = undefined;
+                        existing.updated_at = Date.now();
+                    }
+                }
+                const logTail = existing?.logs?.length ? existing.logs.slice(-EMBEDDING_LOG_TAIL).join("\n") : "";
+                return { preset, model_name: modelName, dimensions, status, error, log_tail: logTail || undefined };
+            });
+            return sendJson(res, 200, { cache_dir: cacheDir, hub_cache_dir: hubCache, hf_endpoint: hfEndpoint, presets });
+        }
+        if (req.method === "POST" && url.pathname === "/embeddings/download") {
+            const body = await readJsonBody(req, 1024 * 1024);
+            const presetRaw = String(body?.preset ?? body?.type ?? "").trim().toLowerCase();
+            const preset = EMBEDDING_PRESETS.find((p) => p === presetRaw) || null;
+            if (!preset)
+                return sendJson(res, 400, { error: `invalid preset: ${presetRaw || "(empty)"}` });
+            const force = Boolean(body?.force);
+            const requestedHfEndpoint = normalizeHfEndpoint(body?.hf_endpoint ?? body?.hfEndpoint ?? req.headers["x-hf-endpoint"]);
+            if (requestedHfEndpoint)
+                process.env.HF_ENDPOINT = requestedHfEndpoint;
+            const hfEndpoint = process.env.HF_ENDPOINT || null;
+            const cacheDir = resolveKreuzbergCacheDir();
+            try {
+                mkdirSync(cacheDir, { recursive: true });
+            }
+            catch {
+            }
+            try {
+                repairHfHubCache(cacheDir);
+            }
+            catch {
+            }
+            const info = getEmbeddingPreset(preset);
+            const modelName = info?.modelName ? String(info.modelName) : null;
+            const dimensions = Number.isFinite(Number(info?.dimensions)) ? Number(info.dimensions) : null;
+            const existing = embeddingJobs.get(preset);
+            if (existing && existing.status === "downloading") {
+                appendEmbeddingLog(existing, `[embeddings] already downloading preset=${preset} model=${existing.model_name || "(unknown)"} cache=${existing.cache_dir}`);
+                return sendJson(res, 202, { ok: true, job: existing });
+            }
+            const now = Date.now();
+            const job = {
+                preset,
+                model_name: modelName,
+                dimensions,
+                cache_dir: cacheDir,
+                hf_endpoint: hfEndpoint,
+                status: "not_downloaded",
+                logs: [],
+                started_at: now,
+                updated_at: now,
+            };
+            appendEmbeddingLog(job, `[embeddings] download request preset=${preset} model=${modelName || "(unknown)"} dims=${dimensions || "(unknown)"} cache=${cacheDir} hf=${hfEndpoint || "(default)"} force=${force ? "1" : "0"}`);
+            if (force && modelName) {
+                const hubCache = hubCacheFromCacheDir(cacheDir);
+                const modelDirs = [...modelCacheDirCandidates(cacheDir, modelName), ...modelCacheDirCandidates(hubCache, modelName)];
+                for (const modelDir of [...new Set(modelDirs)]) {
+                    try {
+                        appendEmbeddingLog(job, `[embeddings] force=1 removing cache dir: ${modelDir}`);
+                        rmSync(modelDir, { recursive: true, force: true });
+                    }
+                    catch (e) {
+                        appendEmbeddingLog(job, `[embeddings] force remove failed: ${String(e?.message || e)}`);
+                    }
+                }
+            }
+            const hubCacheForCheck = hubCacheFromCacheDir(cacheDir);
+            if (!force && modelName && (hasHfModelFiles(cacheDir, modelName) || hasHfModelFiles(hubCacheForCheck, modelName))) {
+                job.status = "downloaded";
+                job.updated_at = Date.now();
+                embeddingJobs.set(preset, job);
+                appendEmbeddingLog(job, `[embeddings] already downloaded preset=${preset} model=${modelName}`);
+                return sendJson(res, 200, {
+                    ok: true,
+                    preset,
+                    model_name: modelName,
+                    dimensions,
+                    cache_dir: cacheDir,
+                    hf_endpoint: hfEndpoint,
+                    status: "downloaded",
+                });
+            }
+            job.status = "downloading";
+            embeddingJobs.set(preset, job);
+            void (async () => {
+                const startedAt = Date.now();
+                let ticker = null;
+                try {
+                    appendEmbeddingLog(job, `[embeddings] downloading... preset=${preset}`);
+                    ticker = setInterval(() => {
+                        appendEmbeddingLog(job, `[embeddings] downloading... still running preset=${preset}`);
+                    }, 5000);
+                    if (job.hf_endpoint)
+                        process.env.HF_ENDPOINT = job.hf_endpoint;
+                    const hubCache = setHfCacheEnvForCacheDir(cacheDir);
+                    const u8 = new Uint8Array(Buffer.from("warmup", "utf-8"));
+                    const result = await extractBytes(u8, "text/plain", {
+                        embeddings: true,
+                        chunking: {
+                            maxChars: 100000,
+                            maxOverlap: 0,
+                            embedding: {
+                                model: { modelType: "preset", value: preset },
+                                cacheDir,
+                                showDownloadProgress: true,
+                            },
+                        },
+                    });
+                    try {
+                        repairHfHubCache(cacheDir);
+                    }
+                    catch {
+                    }
+                    try {
+                        repairHfHubCache(hubCache);
+                    }
+                    catch {
+                    }
+                    const warnings = getProcessingWarnings(result);
+                    for (const w of warnings) {
+                        appendEmbeddingLog(job, `[embeddings] warning source=${w.source || "(unknown)"} msg=${String(w.message || "").slice(0, 500)}`);
+                    }
+                    const initFailure = hasEmbeddingInitFailure(warnings);
+                    if (initFailure)
+                        throw new Error(initFailure);
+                    const detected = modelName ? hasHfModelFiles(cacheDir, modelName) : hasAnyHfModelFiles(cacheDir);
+                    const detectedAny = detected || (modelName ? hasHfModelFiles(hubCache, modelName) : hasAnyHfModelFiles(hubCache));
+                    if (!detectedAny) {
+                        throw new Error(`cache files not detected after download (model=${modelName || "(unknown)"}, cache=${cacheDir}, hub_cache=${hubCache})`);
+                    }
+                    job.status = "downloaded";
+                    job.error = undefined;
+                }
+                catch (e) {
+                    job.status = "error";
+                    job.error = String(e?.message || e);
+                }
+                finally {
+                    if (ticker)
+                        clearInterval(ticker);
+                    job.updated_at = Date.now();
+                    const ms = job.updated_at - startedAt;
+                    appendEmbeddingLog(job, `[embeddings] download done preset=${preset} status=${job.status} ms=${ms}${job.error ? ` err=${job.error}` : ""}`);
+                }
+            })();
+            return sendJson(res, 202, { ok: true, job });
+        }
+        if (req.method === "GET" && url.pathname === "/memories") {
+            const config = getOpenAIConfigFromRequest(req);
+            const sessionId = url.searchParams.get("sessionId") || undefined;
+            const cm = await getContextManager(config, sessionId);
+            let path = url.searchParams.get("path") || "/user";
+            const tree = url.searchParams.get("tree");
+            // Security: Only allow access to /user path
+            if (!path.startsWith("/user") && path !== "/") {
+                path = "/user";
+            }
+            if (tree === "true") {
+                const fullTree = cm.getTree();
+                // Filter tree to only show /user branch
+                // For session isolation, if we have a sessionId, the tree structure might be different
+                // But getTree returns the full VFS.
+                // If isolated, the VFS is already scoped or contains the specific user path.
+                // Let's just return the relevant branch.
+                const userBranch = fullTree.children?.find((c) => c.path.startsWith("/user"));
+                return sendJson(res, 200, userBranch || { path: "/user", children: [] });
+            }
+            const nodes = cm.list(path);
+            return sendJson(res, 200, {
+                path,
+                children: nodes.map((n) => ({
+                    path: n.path,
+                    type: n.type,
+                    level: n.level,
+                    summary: n.summary,
+                    hasContent: !!n.content,
+                    metadata: n.metadata,
+                    childCount: n.children?.length || 0,
+                })),
+            });
+        }
+        if (req.method === "POST" && url.pathname === "/memories") {
+            const config = getOpenAIConfigFromRequest(req);
+            const body = await readJsonBody(req, 1024 * 1024);
+            const sessionId = body.sessionId || undefined;
+            const cm = await getContextManager(config, sessionId);
+            const path = String(body.path || "").trim();
+            const content = String(body.content || "").trim();
+            const summary = String(body.summary || "").trim();
+            if (!path || !content) {
+                return sendJson(res, 400, { error: "path and content are required" });
+            }
+            // Security: Only allow adding to /user path
+            if (!path.startsWith("/user/")) {
+                return sendJson(res, 403, { error: "Only memories under /user/ can be added" });
+            }
+            await cm.addMemory(path, content, summary);
+            return sendJson(res, 200, { ok: true, path });
+        }
+        if (req.method === "DELETE" && url.pathname === "/memories") {
+            const config = getOpenAIConfigFromRequest(req);
+            const body = await readJsonBody(req, 1024 * 1024);
+            const sessionId = body.sessionId || undefined;
+            const cm = await getContextManager(config, sessionId);
+            const path = String(body.path || "").trim();
+            if (!path) {
+                return sendJson(res, 400, { error: "path is required" });
+            }
+            // Security: Only allow deleting from /user path
+            if (!path.startsWith("/user/")) {
+                return sendJson(res, 403, { error: "Only memories under /user/ can be deleted" });
+            }
+            const deleted = await cm.deleteMemory(path);
+            if (!deleted) {
+                return sendJson(res, 404, { error: "Memory not found" });
+            }
+            return sendJson(res, 200, { ok: true, path });
         }
         if (req.method === "GET" && url.pathname === "/skills") {
             const catalog = await loadCatalog();
@@ -849,7 +1580,8 @@ export async function handleRequest(req, res) {
                 });
                 if (!mimeType)
                     return sendJson(res, 400, { error: "mime_type is required" });
-                const extracted = await extractBytes(file.data, mimeType);
+                const uint8Array = new Uint8Array(file.data);
+                const extracted = await extractBytes(uint8Array, mimeType);
                 const rawContent = String(extracted?.content || "");
                 const maxChars = 60000;
                 const content = rawContent.slice(0, maxChars);

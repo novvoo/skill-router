@@ -1,5 +1,10 @@
 import http from "node:http";
 import { handleRequest } from "./handler.js";
+import { getOnnxRuntimePath } from "./utils.js";
+// Configure ONNX Runtime path for Kreuzberg
+const onnxPath = getOnnxRuntimePath();
+process.env.ORT_DYLIB_PATH = onnxPath;
+console.log(`Configured ORT_DYLIB_PATH: ${onnxPath}`);
 const host = "127.0.0.1";
 const startPort = Number(process.env.PORT || "8080") || 8080;
 function listen(server, port) {

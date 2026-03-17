@@ -9,6 +9,7 @@ export interface EmbeddingFunction {
 
 function cosineSimilarity(a: number[], b: number[]): number {
   if (a.length !== b.length) return 0;
+  if (a.length === 0) return 0;
   let dot = 0;
   let magA = 0;
   let magB = 0;
@@ -17,7 +18,10 @@ function cosineSimilarity(a: number[], b: number[]): number {
     magA += a[i] * a[i];
     magB += b[i] * b[i];
   }
-  return dot / (Math.sqrt(magA) * Math.sqrt(magB));
+  if (magA <= 0 || magB <= 0) return 0;
+  const denom = Math.sqrt(magA) * Math.sqrt(magB);
+  const score = dot / denom;
+  return Number.isFinite(score) ? score : 0;
 }
 
 // Simple keyword overlap score (0.0 - 1.0)

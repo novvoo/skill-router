@@ -10,6 +10,10 @@ function headerValue(res: Response, name: string) {
 }
 
 async function main() {
+  process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "smoke";
+  process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://example.invalid/v1/";
+  process.env.OPENAI_MODEL = process.env.OPENAI_MODEL || "smoke";
+
   const host = "127.0.0.1";
   const server = http.createServer((req, res) => {
     void handleRequest(req, res);
@@ -24,6 +28,68 @@ async function main() {
   expectOk(typeof addr === "object" && addr, "server address missing");
   const port = (addr as any).port;
   const base = `http://${host}:${port}`;
+
+  const originalFetch = global.fetch;
+  // @ts-ignore
+  global.fetch = async (url: string | URL, init?: any) => {
+    const urlString = url.toString();
+    if (urlString.startsWith(`http://${host}:`) || urlString.startsWith(`https://${host}:`)) {
+      return originalFetch(url as any, init);
+    }
+    if (urlString.includes("example.invalid")) {
+      const bodyText = String(init?.body || "");
+      let body: any = null;
+      try {
+        body = bodyText ? JSON.parse(bodyText) : null;
+      } catch {
+        body = null;
+      }
+
+      if (urlString.includes("/chat/completions")) {
+        const msgs = Array.isArray(body?.messages) ? body.messages : [];
+        const all = msgs.map((m: any) => String(m?.content || "")).join("\n");
+
+        if (all.includes("Skill 路由器") || all.includes("请选择 skill")) {
+          return new Response(JSON.stringify({ choices: [{ message: { content: '{"skill":"none","confidence":1,"reason":"smoke"}' } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        if (all.includes("memory extraction agent") || all.includes("memories")) {
+          return new Response(JSON.stringify({ choices: [{ message: { content: '{"memories":[]}' } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        if (all.includes("对话压缩器") || all.includes("压缩成一段可供继续对话的摘要")) {
+          return new Response(JSON.stringify({ choices: [{ message: { content: "smoke summary" } }] }), {
+            status: 200,
+            headers: { "Content-Type": "application/json" },
+          });
+        }
+
+        return new Response(JSON.stringify({ choices: [{ message: { content: "ok" } }] }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      if (urlString.includes("/embeddings")) {
+        const input = Array.isArray(body?.input) ? body.input : [body?.input];
+        const data = input.map((_: any, index: number) => ({ index, embedding: [index, index + 1, index + 2] }));
+        return new Response(JSON.stringify({ data }), {
+          status: 200,
+          headers: { "Content-Type": "application/json" },
+        });
+      }
+
+      return new Response("not found", { status: 404 });
+    }
+
+    return new Response("not found", { status: 404 });
+  };
 
   try {
     const htmlResp = await fetch(`${base}/`, { headers: { accept: "text/html" } });
@@ -56,8 +122,37 @@ async function main() {
     expectOk(jsResp.ok, `GET /app.js failed: ${jsResp.status}`);
     const js = await jsResp.text();
     expectOk(js.includes("marked") && js.includes("highlight.js") && js.includes("dompurify"), "app.js missing markdown/highlight imports");
+
+    const fd = new FormData();
+    fd.append("query", "这个文档有提供测试地址吗？");
+    fd.append("mime_type", "text/plain");
+    fd.append("file", new Blob(["测试地址：https://test.example.com\n正式地址：https://www.example.com\n"], { type: "text/plain" }), "doc.txt");
+    const runResp = await fetch(`${base}/run`, { method: "POST", body: fd });
+    expectOk(runResp.ok, `POST /run (multipart) failed: ${runResp.status}`);
+    const runJson: any = await runResp.json();
+    const content = String(runJson?.response || "");
+    expectOk(content.includes("test.example.com"), "run response missing extracted test url");
+
+    const run2Resp = await fetch(`${base}/run`, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        "x-openai-api-key": "smoke",
+        "x-openai-base-url": "https://example.invalid/v1/",
+        "x-openai-model": "smoke",
+        "x-openai-embedding-model": "text-embedding-3-small",
+      },
+      body: JSON.stringify({ query: "hello", messages: [{ role: "user", content: "hello", sessionId: "smoke" }] }),
+    });
+    expectOk(run2Resp.ok, `POST /run (json) failed: ${run2Resp.status}`);
+    const run2: any = await run2Resp.json();
+    expectOk(run2?.models?.chat === "smoke", "run models.chat should be set");
+    expectOk(run2?.models?.embedding?.provider === "openai_compatible", "run models.embedding provider mismatch");
+    expectOk(String(run2?.models?.embedding?.model || "").includes("text-embedding-3-small"), "run models.embedding model mismatch");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
+    await new Promise<void>((resolve) => setTimeout(resolve, 50));
+    global.fetch = originalFetch;
   }
 
   process.stdout.write("smoke: ok\n");
