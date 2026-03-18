@@ -48,12 +48,32 @@ export class ContextManager {
     if (this.indexingPromise) return this.indexingPromise;
     this.indexingPromise = (async () => {
       await this.ensureLoaded();
-      const nodes: ContextNode[] = [];
+      const nodesAll: ContextNode[] = [];
       this.vfs.traverse((node) => {
         if (node.type !== ContextType.Directory && (node.content || node.summary)) {
-          nodes.push(node);
+          nodesAll.push(node);
         }
       });
+
+      const includeSessions = String(process.env.MEMORY_INDEX_INCLUDE_SESSIONS || "").trim() === "1";
+      const maxSessions = readEnvInt("MEMORY_INDEX_MAX_SESSIONS", 30);
+      const includeSkills = String(process.env.MEMORY_INDEX_INCLUDE_SKILLS || "").trim() === "1";
+      const nodes = (() => {
+        const base = nodesAll.filter((n) => includeSkills || n.type !== ContextType.Skill);
+        if (includeSessions) {
+          const sessions = base
+            .filter((n) => n.type === ContextType.Session)
+            .sort((a, b) => {
+              const ta = a.metadata?.mtime ? new Date(a.metadata.mtime).getTime() : a.metadata?.created ? new Date(a.metadata.created).getTime() : 0;
+              const tb = b.metadata?.mtime ? new Date(b.metadata.mtime).getTime() : b.metadata?.created ? new Date(b.metadata.created).getTime() : 0;
+              return tb - ta;
+            })
+            .slice(0, Math.max(0, maxSessions));
+          const others = base.filter((n) => n.type !== ContextType.Session);
+          return [...others, ...sessions];
+        }
+        return base.filter((n) => n.type !== ContextType.Session);
+      })();
 
       const concurrency = readEnvInt("MEMORY_INDEX_CONCURRENCY", 4);
       const itemTimeoutMs = readEnvInt("MEMORY_INDEX_ITEM_TIMEOUT_MS", 20_000);
@@ -84,7 +104,14 @@ export class ContextManager {
       this.reporter?.({
         stage: "memory_index_start",
         message: "开始索引上下文",
-        data: { total: nodes.length, concurrency, item_timeout_ms: itemTimeoutMs },
+        data: {
+          total: nodes.length,
+          concurrency,
+          item_timeout_ms: itemTimeoutMs,
+          include_sessions: includeSessions,
+          max_sessions: includeSessions ? maxSessions : 0,
+          include_skills: includeSkills,
+        },
       });
 
       let next = 0;
@@ -130,7 +157,7 @@ export class ContextManager {
       query,
       maxResults: options.maxResults || 5,
       minScore: options.minScore || 0.5,
-      targetDirectories: options.targetDirectories || ["/"],
+      targetDirectories: options.targetDirectories || ["/user"],
     });
   }
 

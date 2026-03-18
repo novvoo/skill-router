@@ -1139,6 +1139,9 @@ async function runWithRouting(
         concurrency: indexConcurrency,
         item_timeout_ms: indexItemTimeoutMs,
         heartbeat_ms: indexHeartbeatMs,
+        include_sessions: String(process.env.MEMORY_INDEX_INCLUDE_SESSIONS || "").trim() === "1",
+        max_sessions: Number(String(process.env.MEMORY_INDEX_MAX_SESSIONS || "").trim() || "0") || 0,
+        include_skills: String(process.env.MEMORY_INDEX_INCLUDE_SKILLS || "").trim() === "1",
       },
     },
   });
