@@ -49,8 +49,9 @@ export class ContextRetriever {
 
   // Pre-calculate embeddings for nodes
   public async indexNode(node: ContextNode): Promise<void> {
-    const content = node.content || node.summary || node.path;
-    if (content) {
+    const raw = node.summary || node.content || node.path;
+    const content = String(raw || "").slice(0, 8000);
+    if (content.trim()) {
       const vec = await this.embed(content);
       this.nodeEmbeddings.set(node.path, vec);
     }

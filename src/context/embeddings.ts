@@ -1,4 +1,4 @@
-import { extractBytes } from "@kreuzberg/node";
+import { extractBytes, getEmbeddingPreset } from "@kreuzberg/node";
 import { OpenAIConfig } from "../handler.js";
 import path from "node:path";
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
@@ -9,6 +9,25 @@ const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
 let lastEmbeddingDim = 384;
 let hfCacheRepaired = false;
 const kreuzbergInitByKey = new Map<string, Promise<void>>();
+
+function readEnvInt(name: string, fallback: number): number {
+  const raw = String(process.env[name] || "").trim();
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  const timeoutMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  if (!timeoutMs) return p;
+  let t: any;
+  const timeout = new Promise<T>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (t) clearTimeout(t);
+  });
+}
 
 function normalizeHfEndpoint(raw: unknown): string | null {
   const v0 = String(raw || "").trim();
@@ -34,6 +53,88 @@ function resolveKreuzbergCacheDir(): string {
   } catch {
   }
   return preferred;
+}
+
+function hubCacheFromCacheDir(cacheDir: string) {
+  const base = String(cacheDir || "").trim().toLowerCase().endsWith(`${path.sep}models`) ? path.dirname(cacheDir) : cacheDir;
+  const root = path.resolve(base);
+  return path.join(root, "huggingface", "hub");
+}
+
+function joinResolveUrl(base: string, repoId: string, rel: string) {
+  const b = String(base || "").replace(/\/+$/g, "");
+  const safeRel = String(rel || "")
+    .split("/")
+    .map((p) => encodeURIComponent(p))
+    .join("/");
+  return `${b}/${repoId}/resolve/main/${safeRel}`;
+}
+
+async function fetchToFile(url: string, outPath: string) {
+  const timeoutMs = readEnvInt("HF_FETCH_TIMEOUT_MS", 60_000);
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetch(url, { redirect: "follow", signal: controller.signal });
+  } catch (e: any) {
+    throw new Error(`fetch failed: ${String(e?.message || e)} url=${url}`);
+  } finally {
+    clearTimeout(t);
+  }
+  if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${resp.statusText} url=${url}`);
+  const ab = await resp.arrayBuffer();
+  const buf = Buffer.from(ab);
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, buf);
+}
+
+async function prefetchPresetModelFiles(args: { preset: string; hfEndpoint: string; hubCacheDir: string }) {
+  const info: any = getEmbeddingPreset(args.preset as any);
+  const modelName = info?.modelName ? String(info.modelName) : "";
+  const repoId =
+    modelName.includes("/")
+      ? modelName
+      : modelName === "AllMiniLML6V2Q"
+        ? "Xenova/all-MiniLM-L6-v2"
+        : modelName === "BGEBaseENV15"
+          ? "Xenova/bge-base-en-v1.5"
+          : modelName === "BGELargeENV15"
+            ? "Xenova/bge-large-en-v1.5"
+            : null;
+  if (!repoId) return false;
+
+  const commitHash = "0000000000000000000000000000000000000000";
+  const repoDir = path.join(args.hubCacheDir, "models--" + repoId.replace("/", "--"));
+  const snapshotDir = path.join(repoDir, "snapshots", commitHash);
+  mkdirSync(snapshotDir, { recursive: true });
+  mkdirSync(path.join(repoDir, "refs"), { recursive: true });
+  try {
+    writeFileSync(path.join(repoDir, "refs", "main"), commitHash + "\n");
+  } catch {
+  }
+
+  const required = ["config.json", "tokenizer.json"] as const;
+  const optional = ["tokenizer_config.json", "special_tokens_map.json", "vocab.txt"] as const;
+  const onnxCandidates = ["onnx/model.onnx", "onnx/model_quantized.onnx"] as const;
+
+  const downloadRel = async (rel: string, required: boolean) => {
+    const dst0 = path.join(repoDir, rel);
+    const dst1 = path.join(snapshotDir, rel);
+    if (existsSync(dst0) || existsSync(dst1)) return;
+    const url = joinResolveUrl(args.hfEndpoint, repoId, rel);
+    try {
+      await fetchToFile(url, dst0);
+      await fetchToFile(url, dst1);
+    } catch (e) {
+      if (required) throw e;
+    }
+  };
+
+  for (const rel of required) await downloadRel(rel, true);
+  for (const rel of optional) await downloadRel(rel, false);
+  for (const rel of onnxCandidates) await downloadRel(rel, false);
+  return true;
 }
 
 function getDimension(preset: string): number {
@@ -163,6 +264,41 @@ function zeroVector(dim: number): number[] {
 
 type ProcessingWarning = { source?: string; message?: string };
 
+type EmbeddingWarningEvent = {
+  ts: number;
+  provider: "kreuzberg" | "openai_compatible";
+  preset?: string | null;
+  source?: string | null;
+  message: string;
+};
+
+const EMBEDDING_WARNING_MAX = 80;
+const embeddingWarnings: EmbeddingWarningEvent[] = [];
+
+function recordEmbeddingWarnings(args: { provider: "kreuzberg" | "openai_compatible"; preset?: string | null; warnings: ProcessingWarning[] }) {
+  const now = Date.now();
+  for (const w of args.warnings) {
+    const msg = String(w?.message || "").trim();
+    if (!msg) continue;
+    embeddingWarnings.push({
+      ts: now,
+      provider: args.provider,
+      preset: args.preset ?? null,
+      source: w?.source ? String(w.source) : null,
+      message: msg,
+    });
+  }
+  if (embeddingWarnings.length > EMBEDDING_WARNING_MAX) {
+    embeddingWarnings.splice(0, embeddingWarnings.length - EMBEDDING_WARNING_MAX);
+  }
+}
+
+export function getEmbeddingWarningsTail(limit: number = 20): EmbeddingWarningEvent[] {
+  const n = Number.isFinite(Number(limit)) ? Math.max(0, Math.floor(Number(limit))) : 20;
+  if (!n) return [];
+  return embeddingWarnings.slice(-n);
+}
+
 function getProcessingWarnings(result: any): ProcessingWarning[] {
   const arr = Array.isArray(result?.processingWarnings) ? result.processingWarnings : [];
   return arr
@@ -220,22 +356,28 @@ async function kreuzbergEmbedOnce(
   cacheDir: string,
   hfEndpoint: string | null,
 ): Promise<{ embedding: number[] | null; warnings: ProcessingWarning[] }> {
+  const timeoutMs = readEnvInt("KREUZBERG_EMBED_TIMEOUT_MS", 120_000);
   const buffer = Buffer.from(text, "utf-8");
   const uint8Array = new Uint8Array(buffer);
   if (hfEndpoint) process.env.HF_ENDPOINT = hfEndpoint;
-  const result = await extractBytes(uint8Array, "text/plain", {
-    embeddings: true,
-    chunking: {
-      maxChars: 100000,
-      maxOverlap: 0,
-      embedding: {
-        model: { modelType: "preset", value: preset },
-        cacheDir,
-        showDownloadProgress: false,
+  const result = await withTimeout(
+    extractBytes(uint8Array, "text/plain", {
+      embeddings: true,
+      chunking: {
+        maxChars: 100000,
+        maxOverlap: 0,
+        embedding: {
+          model: { modelType: "preset", value: preset },
+          cacheDir,
+          showDownloadProgress: false,
+        },
       },
-    },
-  } as any);
+    } as any),
+    timeoutMs,
+    `kreuzbergEmbedOnce(${preset})`,
+  );
   const warnings = getProcessingWarnings(result);
+  if (warnings.length) recordEmbeddingWarnings({ provider: "kreuzberg", preset, warnings });
   const embedding = extractEmbeddingFromKreuzbergResult(result);
   return { embedding, warnings };
 }
@@ -246,24 +388,45 @@ async function ensureKreuzbergReady(preset: string, cacheDir: string, hubCache: 
   if (existing) return existing;
 
   const init = (async () => {
-    const warmupText = "warmup";
-    let { embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint);
-    if (embedding) return;
-
-    if (hasContentRangeMissingWarning(warnings)) {
-      cleanupPartialFiles(cacheDir);
-      cleanupPartialFiles(hubCache);
-      ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint));
+    try {
+      const warmupText = "warmup";
+      let { embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint);
       if (embedding) return;
-      return;
+
+      if (hasContentRangeMissingWarning(warnings)) {
+        cleanupPartialFiles(cacheDir);
+        cleanupPartialFiles(hubCache);
+        if (hfEndpoint) {
+          try {
+            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: cacheDir });
+            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: hubCache });
+          } catch {
+          }
+          try {
+            repairHfHubCache(hubCache);
+          } catch {
+          }
+        }
+        ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint));
+        if (embedding) return;
+      }
+    } catch {
     }
   })();
 
-  kreuzbergInitByKey.set(key, init);
-  return init;
+  const guarded = init.then(
+    () => void 0,
+    (e) => {
+      kreuzbergInitByKey.delete(key);
+      throw e;
+    },
+  );
+  kreuzbergInitByKey.set(key, guarded);
+  return guarded;
 }
 
 async function createOpenAIEmbeddings(config: OpenAIConfig, model: string, inputs: string[]): Promise<number[][]> {
+  const timeoutMs = readEnvInt("OPENAI_EMBED_TIMEOUT_MS", 20_000);
   const base = config.baseUrl.endsWith("/") ? config.baseUrl : config.baseUrl + "/";
   const url = new URL("embeddings", base).toString();
 
@@ -273,17 +436,22 @@ async function createOpenAIEmbeddings(config: OpenAIConfig, model: string, input
     ...(config.defaultHeaders || {}),
   };
 
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
   let resp: Response;
   try {
     resp = await fetch(url, {
       method: "POST",
       headers,
       body: JSON.stringify({ model, input: inputs }),
+      signal: controller.signal,
     });
   } catch (e: any) {
     const cause = e?.cause;
     const detail = cause?.code || cause?.message || e?.message || String(e);
     throw new Error(`OpenAI-compatible fetch failed (${url}): ${detail}`);
+  } finally {
+    clearTimeout(t);
   }
 
   const text = await resp.text();
@@ -323,7 +491,7 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
   if (useKreuzberg) {
     lastEmbeddingDim = getDimension(preset);
   }
-  const hfEndpoint = normalizeHfEndpoint((config as any).hfEndpoint);
+  const hfEndpoint = normalizeHfEndpoint((config as any).hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT);
   if (hfEndpoint) process.env.HF_ENDPOINT = hfEndpoint;
 
   const cacheDir = resolveKreuzbergCacheDir();
@@ -405,6 +573,17 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
       if (hasContentRangeMissingWarning(warnings)) {
         cleanupPartialFiles(cacheDir);
         cleanupPartialFiles(hubCache);
+        if (hfEndpoint) {
+          try {
+            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: cacheDir });
+            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: hubCache });
+          } catch {
+          }
+          try {
+            repairHfHubCache(hubCache);
+          } catch {
+          }
+        }
         ({ embedding, warnings } = await kreuzbergEmbedOnce(text, preset, cacheDir, hfEndpoint));
         if (embedding) {
           results.push(embedding);

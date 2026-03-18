@@ -8,6 +8,8 @@
     "start": "node dist/index.js",
     "typecheck": "tsc -p tsconfig.json --noEmit",
     "smoke": "tsx scripts/smoke.ts",
+    "smoke:memory-timeout": "tsx scripts/memory-timeout-smoke.ts",
+    "smoke:sse": "tsx scripts/sse-smoke.ts",
     "build:vendor": "tsx scripts/build-vendor.ts"
   },
   "dependencies": {

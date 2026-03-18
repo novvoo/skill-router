@@ -19,13 +19,24 @@ const EMBEDDING_OPTIONS = new Set([
 const HF_ENDPOINT_OPTIONS = new Set(["", "https://huggingface.co", "https://hf-mirror.com"]);
 
 function getSessionId() {
-  let sid = localStorage.getItem(SESSION_KEY);
+  if (getSessionId._mem) return getSessionId._mem;
+  let sid = "";
+  try {
+    sid = String(localStorage.getItem(SESSION_KEY) || "");
+  } catch {
+    sid = "";
+  }
   if (!sid) {
     sid = "sess_" + Math.random().toString(36).slice(2) + Date.now().toString(36);
-    localStorage.setItem(SESSION_KEY, sid);
+    try {
+      localStorage.setItem(SESSION_KEY, sid);
+    } catch {
+    }
   }
+  getSessionId._mem = sid;
   return sid;
 }
+getSessionId._mem = "";
 
 function safeLinkHref(href) {
   const raw = String(href || "").trim();
@@ -293,6 +304,111 @@ async function apiForm(method, url, form, cfg) {
   return data;
 }
 
+async function apiRunStream(args) {
+  const cfg = args.cfg || loadCfg();
+  const headers = {
+    ...headersFromCfg(cfg),
+    Accept: "text/event-stream",
+  };
+  if (args.json) headers["content-type"] = "application/json";
+  const fullUrl = resolveApiUrl(args.url || "/run");
+  let resp;
+  const startedAt = Date.now();
+  if (args.onStage) args.onStage({ stage: "client_request", message: "发起请求", data: { url: fullUrl, method: args.method || "POST" } });
+  try {
+    resp = await fetch(fullUrl, { method: args.method || "POST", headers, body: args.json ? JSON.stringify(args.body || {}) : args.body });
+  } catch (e) {
+    const msg = e?.message ? String(e.message) : String(e || "Failed to fetch");
+    throw new Error(`网络错误：${msg}（${args.method || "POST"} ${fullUrl}）`);
+  }
+
+  const ct = String(resp.headers.get("content-type") || "").toLowerCase();
+  if (args.onStage) {
+    args.onStage({
+      stage: "client_response",
+      message: "收到响应头",
+      data: { status: resp.status, content_type: ct || null, elapsed_ms: Date.now() - startedAt },
+    });
+  }
+  if (!ct.includes("text/event-stream")) {
+    const text = await resp.text();
+    let data;
+    try {
+      data = JSON.parse(text);
+    } catch {
+      data = { raw: text };
+    }
+    if (!resp.ok) {
+      const err = new Error(data?.error || `HTTP ${resp.status}`);
+      err.data = data;
+      throw err;
+    }
+    return data;
+  }
+
+  if (!resp.ok) {
+    const text = await resp.text();
+    throw new Error(text || `HTTP ${resp.status}`);
+  }
+
+  const reader = resp.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = "";
+  let result = null;
+  if (args.onStage) args.onStage({ stage: "client_stream_open", message: "SSE 连接已建立" });
+  const feed = (chunk) => {
+    buf += chunk;
+    while (true) {
+      const sep = buf.indexOf("\n\n");
+      if (sep < 0) break;
+      const block = buf.slice(0, sep);
+      buf = buf.slice(sep + 2);
+      const lines = block.split("\n");
+      let ev = "message";
+      let data = "";
+      for (const line of lines) {
+        if (line.startsWith("event:")) ev = line.slice(6).trim();
+        else if (line.startsWith("data:")) data += line.slice(5).trim();
+      }
+      if (ev === "stage") {
+        let payload = null;
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          payload = { stage: "unknown", message: data };
+        }
+        if (args.onStage) args.onStage(payload);
+      } else if (ev === "result") {
+        try {
+          result = JSON.parse(data);
+        } catch {
+          result = { raw: data };
+        }
+      } else if (ev === "error") {
+        let payload = null;
+        try {
+          payload = JSON.parse(data);
+        } catch {
+          payload = { error: data };
+        }
+        throw new Error(payload?.error || "服务端错误");
+      } else {
+        if (args.onStage) args.onStage({ stage: "client_sse_event", message: `收到事件：${ev}`, data: data ? { data } : null });
+      }
+    }
+  };
+
+  while (true) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    feed(decoder.decode(value, { stream: true }));
+  }
+  if (buf) feed(decoder.decode());
+  if (args.onStage) args.onStage({ stage: "client_stream_done", message: "SSE 连接结束" });
+  if (!result) throw new Error("未收到结果");
+  return result;
+}
+
 function pretty(obj) {
   return JSON.stringify(obj, null, 2);
 }
@@ -382,23 +498,48 @@ function renderChat() {
       meta.textContent = m.meta;
       col.appendChild(meta);
     }
+
+    if (m.progressLogs && Array.isArray(m.progressLogs) && m.progressLogs.length) {
+      const box = document.createElement("div");
+      box.className = "progressBox";
+      const head = document.createElement("div");
+      head.innerHTML = "<strong>Progress:</strong>";
+      box.appendChild(head);
+      for (const t of m.progressLogs) {
+        const line = document.createElement("div");
+        line.textContent = `> ${String(t)}`;
+        box.appendChild(line);
+      }
+      const open = Boolean(m.progressOpen);
+      box.style.display = open ? "block" : "none";
+
+      const btn = document.createElement("button");
+      btn.className = "progressBtn";
+      btn.textContent = open ? "Hide Progress" : "Show Progress";
+      btn.onclick = () => {
+        m.progressOpen = !Boolean(m.progressOpen);
+        box.style.display = m.progressOpen ? "block" : "none";
+        btn.textContent = m.progressOpen ? "Hide Progress" : "Show Progress";
+      };
+
+      col.appendChild(btn);
+      col.appendChild(box);
+    }
     
     if (m.trajectory) {
         const traj = document.createElement("div");
         traj.className = "trajectory";
         traj.innerHTML = `<div><strong>Retrieval Trajectory:</strong></div>` + m.trajectory.map(t => `<div>> ${t}</div>`).join("");
+        const open = Boolean(m.trajectoryOpen);
+        traj.style.display = open ? "block" : "none";
         
         const btn = document.createElement("button");
         btn.className = "trajBtn";
-        btn.textContent = "Show Trajectory";
+        btn.textContent = open ? "Hide Trajectory" : "Show Trajectory";
         btn.onclick = () => {
-            if (traj.style.display === "block") {
-                traj.style.display = "none";
-                btn.textContent = "Show Trajectory";
-            } else {
-                traj.style.display = "block";
-                btn.textContent = "Hide Trajectory";
-            }
+            m.trajectoryOpen = !Boolean(m.trajectoryOpen);
+            traj.style.display = m.trajectoryOpen ? "block" : "none";
+            btn.textContent = m.trajectoryOpen ? "Hide Trajectory" : "Show Trajectory";
         };
         
         col.appendChild(btn);
@@ -460,13 +601,95 @@ async function sendChat() {
   setChatHint("");
   if (chatPreviewOn) setChatPreview(false);
   chatMessages = [...chatMessages, { role: "user", text: query }];
-  chatMessages = [...chatMessages, { role: "assistant", text: "思考中…" }];
+  chatMessages = [...chatMessages, { role: "assistant", text: "思考中…", meta: "进行中：等待服务端响应" }];
   renderChat();
   input.value = "";
 
   const assistantIndex = chatMessages.length - 1;
   try {
     let data;
+    const progressLogs = [];
+    const progressState = {
+      lastAt: Date.now(),
+      memorySearchAt: 0,
+      memoryWarn15: false,
+      memoryWarn60: false,
+      stallTimer: null,
+    };
+    const shortJson = (v, max = 220) => {
+      if (v == null) return "";
+      let s = "";
+      try {
+        s = JSON.stringify(v);
+      } catch {
+        s = String(v);
+      }
+      if (s.length > max) s = s.slice(0, max) + "...";
+      return s;
+    };
+    const clearStallTimer = () => {
+      if (progressState.stallTimer) clearInterval(progressState.stallTimer);
+      progressState.stallTimer = null;
+    };
+    const startStallTimer = () => {
+      clearStallTimer();
+      progressState.stallTimer = setInterval(() => {
+        if (!progressState.memorySearchAt) return;
+        const now = Date.now();
+        const ms = now - progressState.memorySearchAt;
+        if (ms >= 15_000 && !progressState.memoryWarn15) {
+          progressState.memoryWarn15 = true;
+          progressLogs.push(
+            `[${new Date().toLocaleTimeString()}] 检索超过 15s 仍未返回（可能在索引/embedding/模型下载）。建议查看服务端控制台日志与网络连通性。`,
+          );
+          if (progressLogs.length > 80) progressLogs.splice(0, progressLogs.length - 80);
+          const meta = `进行中：检索上下文与记忆（已等待 ${Math.floor(ms / 1000)}s）`;
+          chatMessages[assistantIndex] = { ...(chatMessages[assistantIndex] || {}), role: "assistant", text: "思考中…", meta, progressLogs };
+          renderChat();
+        }
+        if (ms >= 60_000 && !progressState.memoryWarn60) {
+          progressState.memoryWarn60 = true;
+          progressLogs.push(
+            `[${new Date().toLocaleTimeString()}] 检索超过 60s：如果你用的是 kreuzberg/preset embedding，可能在首次下载模型；可先换 openai embedding 或设置更长超时。`,
+          );
+          if (progressLogs.length > 80) progressLogs.splice(0, progressLogs.length - 80);
+          const meta = `进行中：检索上下文与记忆（已等待 ${Math.floor(ms / 1000)}s）`;
+          chatMessages[assistantIndex] = { ...(chatMessages[assistantIndex] || {}), role: "assistant", text: "思考中…", meta, progressLogs };
+          renderChat();
+        }
+      }, 1000);
+    };
+    const setProgress = (p) => {
+      const msg = String(p?.message || "").trim() || "处理中";
+      const now = Date.now();
+      const deltaMs = now - (progressState.lastAt || now);
+      progressState.lastAt = now;
+      const stage = String(p?.stage || "").trim();
+      const dataText = p && typeof p === "object" && "data" in p && p.data != null ? shortJson(p.data) : "";
+      const extraParts = [
+        stage ? `stage=${stage}` : "",
+        Number.isFinite(deltaMs) && deltaMs > 0 ? `+${deltaMs}ms` : "",
+        dataText ? `data=${dataText}` : "",
+      ].filter(Boolean);
+      progressLogs.push(`[${new Date().toLocaleTimeString()}] ${msg}${extraParts.length ? ` (${extraParts.join(", ")})` : ""}`);
+      if (progressLogs.length > 80) progressLogs.splice(0, progressLogs.length - 80);
+      if (stage === "memory_search") {
+        progressState.memorySearchAt = now;
+        progressState.memoryWarn15 = false;
+        progressState.memoryWarn60 = false;
+        startStallTimer();
+      }
+      if (stage === "memory_search_done" || stage === "choose_skill" || stage === "chat" || stage === "client_stream_done") {
+        progressState.memorySearchAt = 0;
+        clearStallTimer();
+      }
+      const meta =
+        progressState.memorySearchAt && stage !== "memory_search_done"
+          ? `进行中：${msg}（已等待 ${Math.floor((now - progressState.memorySearchAt) / 1000)}s）`
+          : `进行中：${msg}`;
+      chatMessages[assistantIndex] = { ...(chatMessages[assistantIndex] || {}), role: "assistant", text: "思考中…", meta, progressLogs };
+      renderChat();
+    };
     if (file) {
       const form = new FormData();
       form.append("query", query);
@@ -475,16 +698,19 @@ async function sendChat() {
       if (chatSummary) form.append("summary", String(chatSummary || ""));
       const cfg = loadCfg();
       if (cfg.systemContent) form.append("systemContent", String(cfg.systemContent || ""));
-      data = await apiForm("POST", "/run", form);
+      data = await apiRunStream({ method: "POST", url: "/run", body: form, cfg, onStage: setProgress });
     } else {
       const cfg = loadCfg();
-      data = await apiJson(
-        "POST",
-        "/run",
-        { query, messages: nextCtxMessages, summary: chatSummary, ...(cfg.systemContent ? { systemContent: String(cfg.systemContent || "") } : {}) },
+      data = await apiRunStream({
+        method: "POST",
+        url: "/run",
+        json: true,
+        body: { query, messages: nextCtxMessages, summary: chatSummary, ...(cfg.systemContent ? { systemContent: String(cfg.systemContent || "") } : {}) },
         cfg,
-      );
+        onStage: setProgress,
+      });
     }
+    if (progressState.memorySearchAt) clearStallTimer();
     const response = String(data?.response ?? "");
     const used = Array.isArray(data?.used_skills) ? data.used_skills.join(", ") : "";
     const chosen = data?.chosen?.skill ? String(data.chosen.skill) : "";
@@ -670,6 +896,7 @@ function renderEmbeddingsStatus(data) {
   const hfEndpoint = data?.hf_endpoint ? String(data.hf_endpoint) : "";
   const endpointText = hfEndpoint ? hfEndpoint : "(默认 huggingface.co)";
   hint.textContent = cacheDir ? `Cache: ${cacheDir} · HF_ENDPOINT: ${endpointText}` : `HF_ENDPOINT: ${endpointText}`;
+  hint.title = "";
 
   const presets = Array.isArray(data?.presets) ? data.presets : [];
   list.textContent = "";
@@ -738,6 +965,23 @@ async function refreshEmbeddingsStatus() {
     const cfg = loadCfg();
     const data = await apiJson("GET", "/embeddings/status", null, cfg);
     renderEmbeddingsStatus(data);
+    try {
+      const w = await apiJson("GET", "/embeddings/warnings?limit=20", null, cfg);
+      const arr = Array.isArray(w?.warnings) ? w.warnings : [];
+      if (arr.length) {
+        const lines = arr
+          .map((x) => {
+            const ts = x?.ts ? new Date(Number(x.ts)).toLocaleTimeString() : "";
+            const provider = x?.provider ? String(x.provider) : "";
+            const preset = x?.preset ? String(x.preset) : "";
+            const msg = x?.message ? String(x.message) : "";
+            return `${ts} ${provider}${preset ? `/${preset}` : ""} ${msg}`.trim();
+          })
+          .filter(Boolean);
+        hint.title = lines.join("\n");
+      }
+    } catch {
+    }
     const presets = Array.isArray(data?.presets) ? data.presets : [];
     const anyDownloading = presets.some((p) => String(p?.status || "") === "downloading");
     if (!anyDownloading && embeddingsPollTimer) {

@@ -7,6 +7,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { ContextManager } from "./context/manager.js";
 import { RetrievalResult, ContextNode } from "./context/types.js";
 import { extractAndSaveMemories } from "./context/memory_extractor.js";
+import { getEmbeddingWarningsTail } from "./context/embeddings.js";
 
 const contextManagers = new Map<string, ContextManager>();
 
@@ -43,6 +44,12 @@ function sendText(res: http.ServerResponse, status: number, contentType: string,
   res.setHeader("Content-Type", contentType);
   writeCorsHeaders(res);
   res.end(body);
+}
+
+function writeSse(res: http.ServerResponse, event: string, data: unknown) {
+  const line = typeof data === "string" ? data : JSON.stringify(data);
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${line}\n\n`);
 }
 
 const EMBEDDING_PRESETS = ["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"] as const;
@@ -83,6 +90,102 @@ function hasEmbeddingInitFailure(warnings: ProcessingWarning[]): string | null {
     if (msg.toLowerCase().includes("plugin error") && msg.toLowerCase().includes("embeddings")) return msg;
   }
   return null;
+}
+
+function repoIdFromText(text: string): string | null {
+  const raw = String(text || "");
+  const m = raw.match(/https?:\/\/[^/]+\/([^/]+\/[^/]+)\/resolve\/main\//i);
+  if (!m) return null;
+  const repoId = String(m[1] || "").trim();
+  if (!repoId || repoId.includes("..")) return null;
+  return repoId;
+}
+
+function repoIdFromKreuzbergModelName(modelName: string | null): string | null {
+  const k = String(modelName || "").trim();
+  if (!k) return null;
+  if (k.includes("/")) return k;
+  if (k === "AllMiniLML6V2Q") return "Xenova/all-MiniLM-L6-v2";
+  if (k === "BGEBaseENV15") return "Xenova/bge-base-en-v1.5";
+  if (k === "BGELargeENV15") return "Xenova/bge-large-en-v1.5";
+  return null;
+}
+
+function joinResolveUrl(base: string, repoId: string, rel: string) {
+  const b = String(base || "").replace(/\/+$/g, "");
+  const safeRel = String(rel || "")
+    .split("/")
+    .map((p) => encodeURIComponent(p))
+    .join("/");
+  return `${b}/${repoId}/resolve/main/${safeRel}`;
+}
+
+async function fetchToFile(url: string, outPath: string) {
+  let resp: Response;
+  try {
+    resp = await fetch(url, { redirect: "follow" });
+  } catch (e: any) {
+    throw new Error(`fetch failed: ${String(e?.message || e)} url=${url}`);
+  }
+  if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${resp.statusText} url=${url}`);
+  const ab = await resp.arrayBuffer();
+  const buf = Buffer.from(ab);
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, buf);
+}
+
+async function prefetchHfModelFiles(args: { hfEndpoint: string; hubCacheDir: string; repoId: string; job?: EmbeddingDownloadJob }) {
+  const commitHash = "0000000000000000000000000000000000000000";
+  const repoDir = path.join(args.hubCacheDir, "models--" + args.repoId.replace("/", "--"));
+  const snapshotDir = path.join(repoDir, "snapshots", commitHash);
+  mkdirSync(snapshotDir, { recursive: true });
+  mkdirSync(path.join(repoDir, "refs"), { recursive: true });
+  try {
+    writeFileSync(path.join(repoDir, "refs", "main"), commitHash + "\n");
+  } catch {
+  }
+
+  const required = ["config.json", "tokenizer.json"] as const;
+  const optional = ["tokenizer_config.json", "special_tokens_map.json", "vocab.txt"] as const;
+  const onnxCandidates = ["onnx/model_quantized.onnx", "onnx/model.onnx"] as const;
+
+  const downloadRel = async (rel: string, required: boolean) => {
+    const dst0 = path.join(repoDir, rel);
+    const dst1 = path.join(snapshotDir, rel);
+    if (existsSync(dst0) || existsSync(dst1)) return;
+    const url = joinResolveUrl(args.hfEndpoint, args.repoId, rel);
+    try {
+      args.job && appendEmbeddingLog(args.job, `[embeddings] prefetch ${rel} -> ${url}`);
+      await fetchToFile(url, dst0);
+      await fetchToFile(url, dst1);
+    } catch (e: any) {
+      const msg = String(e?.message || e);
+      args.job && appendEmbeddingLog(args.job, `[embeddings] prefetch failed rel=${rel} err=${msg}`);
+      if (required) throw e;
+    }
+  };
+
+  for (const rel of required) await downloadRel(rel, true);
+  for (const rel of optional) await downloadRel(rel, false);
+  if (
+    !existsSync(path.join(repoDir, "onnx", "model_quantized.onnx")) &&
+    !existsSync(path.join(repoDir, "onnx", "model.onnx")) &&
+    !existsSync(path.join(snapshotDir, "onnx", "model_quantized.onnx")) &&
+    !existsSync(path.join(snapshotDir, "onnx", "model.onnx"))
+  ) {
+    let downloadedOnnx = false;
+    let lastErr: unknown = null;
+    for (const rel of onnxCandidates) {
+      try {
+        await downloadRel(rel, true);
+        downloadedOnnx = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!downloadedOnnx) throw lastErr || new Error("onnx model download failed");
+  }
 }
 
 function appendEmbeddingLog(job: EmbeddingDownloadJob, message: string) {
@@ -295,6 +398,14 @@ function modelCacheDirCandidates(cacheDir: string, modelName: string) {
   add("models--sentence-transformers--" + encoded);
   add("models--sentence-transformers--" + encoded.toLowerCase());
   add("models--" + encoded.toLowerCase());
+  const repoId = repoIdFromKreuzbergModelName(modelName);
+  if (repoId) {
+    const repoEncoded = repoId.replace("/", "--");
+    add("models--" + repoEncoded);
+    add("models--" + repoEncoded.toLowerCase());
+    add("models--sentence-transformers--" + repoEncoded);
+    add("models--sentence-transformers--" + repoEncoded.toLowerCase());
+  }
   return [...new Set(out)];
 }
 
@@ -582,7 +693,7 @@ function getOpenAIConfigFromRequest(req: http.IncomingMessage): OpenAIConfig {
   const baseUrl = (headerBase || String(process.env.OPENAI_BASE_URL || "")).trim();
   const model = (headerModel || String(process.env.OPENAI_MODEL || "")).trim();
   const embeddingModel = (headerEmbeddingModel || String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")).trim();
-  const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint) || undefined;
+  const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint || process.env.HF_ENDPOINT) || undefined;
 
   let defaultHeaders: Record<string, string> | undefined;
   const rawDefaultHeaders = headerDefaultHeaders || process.env.OPENAI_DEFAULT_HEADERS;
@@ -937,8 +1048,15 @@ function formatContext(nodes: ContextNode[]): string {
 
 async function runWithRouting(
   config: OpenAIConfig,
-  args: { query?: string; messages?: ChatHistoryMessage[] | null; summary?: string | null; doc?: DocumentContext | null },
+  args: {
+    query?: string;
+    messages?: ChatHistoryMessage[] | null;
+    summary?: string | null;
+    doc?: DocumentContext | null;
+    onProgress?: (e: { stage: string; message: string; data?: any }) => void;
+  },
 ) {
+  const onProgress = args.onProgress;
   const catalog = await loadCatalog();
   const doc = args.doc || null;
   const incoming = args.messages && args.messages.length ? args.messages : null;
@@ -954,16 +1072,16 @@ async function runWithRouting(
   const withDoc = withDocumentInLastUserMessage(baseMessages, doc);
   const normalized = normalizeChatHistoryMessages(withDoc);
   if (!normalized) throw new Error("invalid messages format");
+  onProgress?.({ stage: "compress", message: "压缩对话历史" });
   const compressed = await compressChatHistory(config, normalized, summaryIn);
   const summary = String(compressed.summary || "").trim();
+  onProgress?.({ stage: "compress_done", message: "对话历史已压缩", data: { summarized: compressed.summarized } });
 
   // Retrieve context
   const sessionId = args.messages?.[0]?.sessionId || undefined;
   const cm = await getContextManager(config, sessionId);
   const lastUserWithDoc = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
   const lastUser = stripDocumentBlockFromUserContent(lastUserWithDoc);
-
-  const retrieval = await cm.search(lastUser, { maxResults: 3 });
 
   const rawEmbeddingModel = String(config.embeddingModel || "").trim();
   const lowerEmbeddingModel = rawEmbeddingModel.toLowerCase();
@@ -979,6 +1097,13 @@ async function runWithRouting(
   const embeddingUsesKreuzberg = presetSet.has(normalizedPreset);
   const cacheDirFromEnv = String(process.env.KREUZBERG_CACHE_DIR || "").trim();
   const embeddingCacheDir = path.resolve(process.cwd(), cacheDirFromEnv || ".cache/models");
+  const hfEndpointResolved = normalizeHfEndpoint(config.hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+  const timeoutOpenAIEmbedMs = Number(String(process.env.OPENAI_EMBED_TIMEOUT_MS || "").trim() || "0") || null;
+  const timeoutKreuzbergEmbedMs = Number(String(process.env.KREUZBERG_EMBED_TIMEOUT_MS || "").trim() || "0") || null;
+  const timeoutHfFetchMs = Number(String(process.env.HF_FETCH_TIMEOUT_MS || "").trim() || "0") || null;
+  const indexConcurrency = Number(String(process.env.MEMORY_INDEX_CONCURRENCY || "").trim() || "0") || null;
+  const indexItemTimeoutMs = Number(String(process.env.MEMORY_INDEX_ITEM_TIMEOUT_MS || "").trim() || "0") || null;
+  const indexHeartbeatMs = Number(String(process.env.MEMORY_INDEX_HEARTBEAT_MS || "").trim() || "0") || null;
   const embeddingDims = (() => {
     switch (normalizedPreset) {
       case "fast":
@@ -995,6 +1120,38 @@ async function runWithRouting(
         return null;
     }
   })();
+
+  onProgress?.({
+    stage: "memory_search_config",
+    message: "检索配置",
+    data: {
+      embedding_model: rawEmbeddingModel || null,
+      embedding_provider: embeddingUsesKreuzberg ? "kreuzberg" : "openai_compatible",
+      preset: embeddingUsesKreuzberg ? normalizedPreset : null,
+      cache_dir: embeddingUsesKreuzberg ? embeddingCacheDir : null,
+      hf_endpoint: hfEndpointResolved,
+      timeouts: {
+        openai_embed_ms: timeoutOpenAIEmbedMs,
+        kreuzberg_embed_ms: timeoutKreuzbergEmbedMs,
+        hf_fetch_ms: timeoutHfFetchMs,
+      },
+      indexing: {
+        concurrency: indexConcurrency,
+        item_timeout_ms: indexItemTimeoutMs,
+        heartbeat_ms: indexHeartbeatMs,
+      },
+    },
+  });
+
+  cm.setReporter(onProgress ? (e) => onProgress(e) : null);
+  onProgress?.({ stage: "memory_search", message: "检索上下文与记忆" });
+  let retrieval: RetrievalResult;
+  try {
+    retrieval = await cm.search(lastUser, { maxResults: 3 });
+  } finally {
+    cm.setReporter(null);
+  }
+  onProgress?.({ stage: "memory_search_done", message: "检索完成", data: { retrieved_count: retrieval.nodes.length } });
 
   if (doc && isLikelyTestAddressQuery(lastUser)) {
     const response = buildTestAddressResponseFromDocContent(doc.content);
@@ -1041,7 +1198,9 @@ async function runWithRouting(
     doc ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
     contextText ? `\n\n${contextText}` : "",
   ].filter(Boolean);
+  onProgress?.({ stage: "choose_skill", message: "选择路由与技能" });
   const chosen = await chooseSkill(config, routingParts.join(""));
+  onProgress?.({ stage: "choose_skill_done", message: "路由完成", data: { skill: chosen.skill, confidence: chosen.confidence } });
 
   const extraFields = {
     retrieval_trajectory: retrieval.trajectory,
@@ -1080,8 +1239,10 @@ async function runWithRouting(
       ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
       ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
+    onProgress?.({ stage: "chat", message: "生成回复" });
     const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
   const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+    onProgress?.({ stage: "chat_done", message: "回复生成完成" });
   
   // Async memory extraction
   void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
@@ -1113,8 +1274,10 @@ if (!meta) {
     ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
     ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
   ];
+  onProgress?.({ stage: "chat", message: "生成回复" });
   const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
   const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+  onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
   // Async memory extraction
   void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
@@ -1146,8 +1309,10 @@ const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: st
   ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
   ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
 ];
+onProgress?.({ stage: "chat", message: "生成回复" });
 const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
 const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
 // Async memory extraction
 void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
@@ -1374,16 +1539,16 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         repairHfHubCache(hubCache);
       } catch {
       }
-      const hfEndpoint = process.env.HF_ENDPOINT || null;
+      const normalized = normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+      if (normalized && process.env.HF_ENDPOINT !== normalized) process.env.HF_ENDPOINT = normalized;
+      const hfEndpoint = normalized;
       const anyDownloaded = hasAnyHfModelFiles(cacheDir) || hasAnyHfModelFiles(hubCache);
       const presets = EMBEDDING_PRESETS.map((preset) => {
         const info: any = getEmbeddingPreset(preset as any);
         const modelName = info?.modelName ? String(info.modelName) : null;
         const dimensions = Number.isFinite(Number(info?.dimensions)) ? Number(info.dimensions) : null;
 
-        const downloaded = modelName
-          ? hasHfModelFiles(cacheDir, modelName) || hasHfModelFiles(hubCache, modelName) || anyDownloaded
-          : anyDownloaded;
+        const downloaded = modelName ? hasHfModelFiles(cacheDir, modelName) || hasHfModelFiles(hubCache, modelName) : false;
         const existing = embeddingJobs.get(preset);
         let status: EmbeddingDownloadStatus = downloaded ? "downloaded" : "not_downloaded";
         let error: string | undefined;
@@ -1407,6 +1572,12 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return sendJson(res, 200, { cache_dir: cacheDir, hub_cache_dir: hubCache, hf_endpoint: hfEndpoint, presets });
     }
 
+    if (req.method === "GET" && url.pathname === "/embeddings/warnings") {
+      const limit = Number(url.searchParams.get("limit") || "");
+      const tail = getEmbeddingWarningsTail(Number.isFinite(limit) ? limit : 30);
+      return sendJson(res, 200, { warnings: tail });
+    }
+
     if (req.method === "POST" && url.pathname === "/embeddings/download") {
       const body: any = await readJsonBody(req, 1024 * 1024);
       const presetRaw = String(body?.preset ?? body?.type ?? "").trim().toLowerCase();
@@ -1416,7 +1587,9 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
       const requestedHfEndpoint = normalizeHfEndpoint(body?.hf_endpoint ?? body?.hfEndpoint ?? req.headers["x-hf-endpoint"]);
       if (requestedHfEndpoint) process.env.HF_ENDPOINT = requestedHfEndpoint;
-      const hfEndpoint = process.env.HF_ENDPOINT || null;
+      const normalized = normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+      if (normalized && process.env.HF_ENDPOINT !== normalized) process.env.HF_ENDPOINT = normalized;
+      const hfEndpoint = normalized;
 
       const cacheDir = resolveKreuzbergCacheDir();
       try {
@@ -1502,6 +1675,13 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }, 5000);
           if (job.hf_endpoint) process.env.HF_ENDPOINT = job.hf_endpoint;
           const hubCache = setHfCacheEnvForCacheDir(cacheDir);
+          if (job.hf_endpoint) {
+            const repoId = repoIdFromKreuzbergModelName(modelName);
+            if (repoId) {
+              await prefetchHfModelFiles({ hfEndpoint: job.hf_endpoint, hubCacheDir: cacheDir, repoId, job });
+              await prefetchHfModelFiles({ hfEndpoint: job.hf_endpoint, hubCacheDir: hubCache, repoId, job });
+            }
+          }
           const u8 = new Uint8Array(Buffer.from("warmup", "utf-8"));
           const result: any = await extractBytes(u8, "text/plain", {
             embeddings: true,
@@ -1529,11 +1709,29 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
             appendEmbeddingLog(job, `[embeddings] warning source=${w.source || "(unknown)"} msg=${String(w.message || "").slice(0, 500)}`);
           }
           const initFailure = hasEmbeddingInitFailure(warnings);
-          if (initFailure) throw new Error(initFailure);
+          if (initFailure) {
+            const isContentRangeMissing = initFailure.toLowerCase().includes("content-range") && initFailure.toLowerCase().includes("missing");
+            if (isContentRangeMissing && job.hf_endpoint) {
+              const repoId = repoIdFromText(initFailure) || repoIdFromKreuzbergModelName(modelName);
+              if (repoId) {
+                await prefetchHfModelFiles({ hfEndpoint: job.hf_endpoint, hubCacheDir: cacheDir, repoId, job });
+                await prefetchHfModelFiles({ hfEndpoint: job.hf_endpoint, hubCacheDir: hubCache, repoId, job });
+              }
+            }
+            try {
+              repairHfHubCache(cacheDir);
+            } catch {
+            }
+            try {
+              repairHfHubCache(hubCache);
+            } catch {
+            }
+          }
 
           const detected = modelName ? hasHfModelFiles(cacheDir, modelName) : hasAnyHfModelFiles(cacheDir);
           const detectedAny = detected || (modelName ? hasHfModelFiles(hubCache, modelName) : hasAnyHfModelFiles(hubCache));
           if (!detectedAny) {
+            if (initFailure) throw new Error(initFailure);
             throw new Error(`cache files not detected after download (model=${modelName || "(unknown)"}, cache=${cacheDir}, hub_cache=${hubCache})`);
           }
 
@@ -1660,11 +1858,45 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
 
     if (req.method === "POST" && url.pathname === "/run") {
       const ct = String(req.headers["content-type"] || "").toLowerCase();
+      const wantsStream = String(req.headers.accept || "").toLowerCase().includes("text/event-stream") || url.searchParams.get("stream") === "1";
+      const initStream = () => {
+        if (!wantsStream) return;
+        res.statusCode = 200;
+        res.setHeader("Content-Type", "text/event-stream; charset=utf-8");
+        res.setHeader("Cache-Control", "no-cache");
+        res.setHeader("Connection", "keep-alive");
+        writeCorsHeaders(res);
+        writeSse(res, "stage", { stage: "start", message: "已接收请求" });
+      };
+      const emit = (e: { stage: string; message: string; data?: any }) => {
+        if (!wantsStream) return;
+        writeSse(res, "stage", e);
+      };
+      initStream();
       if (ct.includes("multipart/form-data")) {
         const maxBytes = 15 * 1024 * 1024;
-        const parsed = await parseMultipart(req, maxBytes);
+        emit({ stage: "parse_form", message: "解析表单与文件" });
+        let parsed: any;
+        try {
+          parsed = await parseMultipart(req, maxBytes);
+        } catch (e: any) {
+          const errMsg = String(e?.message || e);
+          if (wantsStream) {
+            writeSse(res, "error", { error: errMsg });
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          throw e;
+        }
         const query = String(parsed.fields["query"] || "").trim();
-        if (!query) return sendJson(res, 400, { error: "query is required" });
+        if (!query) {
+          if (wantsStream) {
+            writeSse(res, "error", { error: "query is required" });
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          return sendJson(res, 400, { error: "query is required" });
+        }
         let messages: any = null;
         if (parsed.fields["messages"]) {
           try {
@@ -1676,6 +1908,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const systemContentFromBody = hasSystemContentField ? String(parsed.fields["systemContent"] || parsed.fields["system_content"] || "") : null;
         const file = parsed.file;
         if (!file || (file.fieldname !== "file" && file.fieldname !== "document")) {
+          if (wantsStream) {
+            writeSse(res, "error", { error: "missing file field (file|document)" });
+            writeSse(res, "done", {});
+            return res.end();
+          }
           return sendJson(res, 400, { error: "missing file field (file|document)" });
         }
         const mimeType = resolveMimeType({
@@ -1684,7 +1921,15 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           filename: file.filename,
           data: file.data,
         });
-        if (!mimeType) return sendJson(res, 400, { error: "mime_type is required" });
+        if (!mimeType) {
+          if (wantsStream) {
+            writeSse(res, "error", { error: "mime_type is required" });
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          return sendJson(res, 400, { error: "mime_type is required" });
+        }
+        emit({ stage: "extract_document", message: "提取文档内容", data: { mime_type: mimeType, filename: file.filename } });
         const uint8Array = new Uint8Array(file.data);
         const extracted = await extractBytes(uint8Array, mimeType);
         const rawContent = String((extracted as any)?.content || "");
@@ -1697,24 +1942,97 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           contentChars: rawContent.length,
           truncated: rawContent.length > maxChars,
         };
-        const config = getOpenAIConfigFromRequest(req);
+        let config: OpenAIConfig;
+        try {
+          config = getOpenAIConfigFromRequest(req);
+        } catch (e: any) {
+          const errMsg = String(e?.message || e);
+          if (wantsStream) {
+            writeSse(res, "error", { error: errMsg });
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          throw e;
+        }
         if (systemContentFromBody !== null) config.systemContent = systemContentFromBody.trim() ? systemContentFromBody : undefined;
-        const result = await runWithRouting(config, { query, messages, summary, doc });
-        return sendJson(res, 200, { ...result, document: { filename: doc.filename, mime_type: doc.mimeType, content_chars: doc.contentChars, truncated: doc.truncated } });
+        emit({ stage: "run", message: "开始路由与执行" });
+        try {
+          const result = await runWithRouting(config, { query, messages, summary, doc, onProgress: emit });
+          const payload = { ...result, document: { filename: doc.filename, mime_type: doc.mimeType, content_chars: doc.contentChars, truncated: doc.truncated } };
+          if (wantsStream) {
+            writeSse(res, "result", payload);
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          return sendJson(res, 200, payload);
+        } catch (e: any) {
+          const errMsg = String(e?.message || e);
+          if (wantsStream) {
+            writeSse(res, "error", { error: errMsg });
+            writeSse(res, "done", {});
+            return res.end();
+          }
+          throw e;
+        }
       }
 
-      const body: any = await readJsonBody(req, 2 * 1024 * 1024);
+      let body: any;
+      try {
+        body = await readJsonBody(req, 2 * 1024 * 1024);
+      } catch (e: any) {
+        const errMsg = String(e?.message || e);
+        if (wantsStream) {
+          writeSse(res, "error", { error: errMsg });
+          writeSse(res, "done", {});
+          return res.end();
+        }
+        throw e;
+      }
       const query = String(body?.query ?? "");
       const messages: any = body?.messages ?? null;
       const summary = String(body?.summary ?? "");
       const hasSystemContentField = Object.prototype.hasOwnProperty.call(body || {}, "systemContent") || Object.prototype.hasOwnProperty.call(body || {}, "system_content");
       const systemContentFromBody = hasSystemContentField ? String(body?.systemContent ?? body?.system_content ?? "") : null;
       const hasMessages = Array.isArray(messages) && messages.length;
-      if (!query.trim() && !hasMessages) return sendJson(res, 400, { error: "query or messages is required" });
-      const config = getOpenAIConfigFromRequest(req);
+      if (!query.trim() && !hasMessages) {
+        if (wantsStream) {
+          writeSse(res, "error", { error: "query or messages is required" });
+          writeSse(res, "done", {});
+          return res.end();
+        }
+        return sendJson(res, 400, { error: "query or messages is required" });
+      }
+      let config: OpenAIConfig;
+      try {
+        config = getOpenAIConfigFromRequest(req);
+      } catch (e: any) {
+        const errMsg = String(e?.message || e);
+        if (wantsStream) {
+          writeSse(res, "error", { error: errMsg });
+          writeSse(res, "done", {});
+          return res.end();
+        }
+        throw e;
+      }
       if (systemContentFromBody !== null) config.systemContent = systemContentFromBody.trim() ? systemContentFromBody : undefined;
-      const result = await runWithRouting(config, { query, messages, summary });
-      return sendJson(res, 200, result);
+      emit({ stage: "run", message: "开始路由与执行" });
+      try {
+        const result = await runWithRouting(config, { query, messages, summary, onProgress: emit });
+        if (wantsStream) {
+          writeSse(res, "result", result);
+          writeSse(res, "done", {});
+          return res.end();
+        }
+        return sendJson(res, 200, result);
+      } catch (e: any) {
+        const errMsg = String(e?.message || e);
+        if (wantsStream) {
+          writeSse(res, "error", { error: errMsg });
+          writeSse(res, "done", {});
+          return res.end();
+        }
+        throw e;
+      }
     }
 
     if (req.method === "POST" && url.pathname === "/documents/extract") {

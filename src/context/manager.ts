@@ -13,6 +13,8 @@ export class ContextManager {
   private retriever: ContextRetriever;
   private loaded: boolean = false;
   private indexed: boolean = false;
+  private indexingPromise: Promise<void> | null = null;
+  private reporter: ((e: { stage: string; message: string; data?: any }) => void) | null = null;
   private config: OpenAIConfig;
   private sessionId: string | undefined;
 
@@ -31,6 +33,10 @@ export class ContextManager {
     this.retriever = new ContextRetriever(this.vfs, embedFn);
   }
 
+  public setReporter(fn: ((e: { stage: string; message: string; data?: any }) => void) | null) {
+    this.reporter = fn;
+  }
+
   public async ensureLoaded(): Promise<void> {
     if (this.loaded) return;
     await this.memoryManager.loadAll();
@@ -39,15 +45,78 @@ export class ContextManager {
 
   public async ensureIndexed(): Promise<void> {
     if (this.indexed) return;
-    await this.ensureLoaded();
-    const indexPromises: Promise<void>[] = [];
-    this.vfs.traverse((node) => {
-      if (node.type !== ContextType.Directory && (node.content || node.summary)) {
-        indexPromises.push(this.retriever.indexNode(node));
+    if (this.indexingPromise) return this.indexingPromise;
+    this.indexingPromise = (async () => {
+      await this.ensureLoaded();
+      const nodes: ContextNode[] = [];
+      this.vfs.traverse((node) => {
+        if (node.type !== ContextType.Directory && (node.content || node.summary)) {
+          nodes.push(node);
+        }
+      });
+
+      const concurrency = readEnvInt("MEMORY_INDEX_CONCURRENCY", 4);
+      const itemTimeoutMs = readEnvInt("MEMORY_INDEX_ITEM_TIMEOUT_MS", 20_000);
+      const heartbeatMs = readEnvInt("MEMORY_INDEX_HEARTBEAT_MS", 2000);
+      const startedAt = Date.now();
+      let done = 0;
+      let failed = 0;
+      let lastPath = "";
+      let heartbeat: any = null;
+      if (heartbeatMs > 0) {
+        heartbeat = setInterval(() => {
+          this.reporter?.({
+            stage: "memory_index_heartbeat",
+            message: "索引上下文中",
+            data: {
+              total: nodes.length,
+              done,
+              failed,
+              last_path: lastPath || null,
+              elapsed_ms: Date.now() - startedAt,
+              concurrency,
+              item_timeout_ms: itemTimeoutMs,
+            },
+          });
+        }, heartbeatMs);
       }
+
+      this.reporter?.({
+        stage: "memory_index_start",
+        message: "开始索引上下文",
+        data: { total: nodes.length, concurrency, item_timeout_ms: itemTimeoutMs },
+      });
+
+      let next = 0;
+      const workers = new Array(concurrency).fill(0).map(async () => {
+        while (true) {
+          const i = next++;
+          if (i >= nodes.length) break;
+          const node = nodes[i];
+          try {
+            lastPath = node.path;
+            await withTimeout(this.retriever.indexNode(node), itemTimeoutMs, `indexNode(${node.path})`);
+            done++;
+          } catch {
+            failed++;
+          }
+        }
+      });
+
+      await Promise.all(workers).finally(() => {
+        if (heartbeat) clearInterval(heartbeat);
+      });
+
+      this.reporter?.({
+        stage: "memory_index_done",
+        message: "上下文索引完成",
+        data: { total: nodes.length, done, failed, elapsed_ms: Date.now() - startedAt },
+      });
+      this.indexed = true;
+    })().finally(() => {
+      if (!this.indexed) this.indexingPromise = null;
     });
-    await Promise.all(indexPromises);
-    this.indexed = true;
+    return this.indexingPromise;
   }
 
   public async init(): Promise<void> {
@@ -126,4 +195,23 @@ export class ContextManager {
   public getTree(): any {
       return this.vfs.toJSON();
   }
+}
+
+function readEnvInt(name: string, fallback: number): number {
+  const raw = String(process.env[name] || "").trim();
+  const n = Number(raw);
+  if (!Number.isFinite(n) || n <= 0) return fallback;
+  return Math.floor(n);
+}
+
+function withTimeout<T>(p: Promise<T>, ms: number, label: string): Promise<T> {
+  const timeoutMs = Number.isFinite(ms) && ms > 0 ? ms : 0;
+  if (!timeoutMs) return p;
+  let t: any;
+  const timeout = new Promise<T>((_, reject) => {
+    t = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs);
+  });
+  return Promise.race([p, timeout]).finally(() => {
+    if (t) clearTimeout(t);
+  });
 }
