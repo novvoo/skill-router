@@ -8,6 +8,7 @@ import { ContextManager } from "./context/manager.js";
 import { RetrievalResult, ContextNode } from "./context/types.js";
 import { extractAndSaveMemories } from "./context/memory_extractor.js";
 import { getEmbeddingWarningsTail } from "./context/embeddings.js";
+import { fetchExternalApiContextsFromText, getExternalApiContextOptionsFromEnv, type ExternalApiFetchItem } from "./context/external_api.js";
 
 const contextManagers = new Map<string, ContextManager>();
 
@@ -1083,6 +1084,15 @@ async function runWithRouting(
   const lastUserWithDoc = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
   const lastUser = stripDocumentBlockFromUserContent(lastUserWithDoc);
 
+  const apiContextOpts = getExternalApiContextOptionsFromEnv();
+  let apiContextPromise: Promise<{ contextText: string; urls: string[]; items: ExternalApiFetchItem[] }>;
+  if (apiContextOpts.enabled) {
+    onProgress?.({ stage: "api_fetch", message: "抓取外部 API 数据" });
+    apiContextPromise = fetchExternalApiContextsFromText(lastUserWithDoc, apiContextOpts);
+  } else {
+    apiContextPromise = Promise.resolve({ contextText: "", urls: [], items: [] });
+  }
+
   const rawEmbeddingModel = String(config.embeddingModel || "").trim();
   const lowerEmbeddingModel = rawEmbeddingModel.toLowerCase();
   const presetSet = new Set(["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"]);
@@ -1156,6 +1166,18 @@ async function runWithRouting(
   }
   onProgress?.({ stage: "memory_search_done", message: "检索完成", data: { retrieved_count: retrieval.nodes.length } });
 
+  const apiContext = await apiContextPromise;
+  onProgress?.({
+    stage: "api_fetch_done",
+    message: "外部 API 数据抓取完成",
+    data: {
+      enabled: apiContextOpts.enabled,
+      urls: apiContext.urls,
+      fetched_ok: apiContext.items.filter((it) => Boolean(it.ok)).length,
+      included_in_prompt: Boolean(apiContext.contextText),
+    },
+  });
+
   if (doc && isLikelyTestAddressQuery(lastUser)) {
     const response = buildTestAddressResponseFromDocContent(doc.content);
     void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: response }]);
@@ -1191,6 +1213,7 @@ async function runWithRouting(
   }
 
   const contextText = formatContext(retrieval.nodes);
+  const apiContextText = String(apiContext.contextText || "").trim();
 
   const routingDocSnippet = doc?.content ? doc.content.slice(0, 2000) : "";
   const routingMessages = stripDocumentBlocksForRouting(compressed.messages);
@@ -1200,6 +1223,7 @@ async function runWithRouting(
     routingMessages.length ? `\n\n[最近对话]\n${buildTranscript(routingMessages.slice(-8), 3000)}` : "",
     doc ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
     contextText ? `\n\n${contextText}` : "",
+    apiContextText ? `\n\n${apiContextText}` : "",
   ].filter(Boolean);
   onProgress?.({ stage: "choose_skill", message: "选择路由与技能" });
   const chosen = await chooseSkill(config, routingParts.join(""));
@@ -1212,6 +1236,12 @@ async function runWithRouting(
       retrieval_called: true,
       retrieved_count: retrieval.nodes.length,
       used_in_prompt: Boolean(contextText),
+    },
+    api_context: {
+      enabled: apiContextOpts.enabled,
+      urls: apiContext.urls,
+      fetched_ok: apiContext.items.filter((it) => Boolean(it.ok)).length,
+      used_in_prompt: Boolean(apiContextText),
     },
     models: {
       chat: config.model,
@@ -1240,6 +1270,7 @@ async function runWithRouting(
       ...(docPolicy ? [{ role: "system" as const, content: docPolicy }] : []),
       ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
       ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
+      ...(apiContextText ? [{ role: "system" as const, content: apiContextText }] : []),
       ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
     onProgress?.({ stage: "chat", message: "生成回复" });
@@ -1275,6 +1306,7 @@ if (!meta) {
     ...(docPolicy ? [{ role: "system" as const, content: docPolicy }] : []),
     ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
     ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
+    ...(apiContextText ? [{ role: "system" as const, content: apiContextText }] : []),
     ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
   ];
   onProgress?.({ stage: "chat", message: "生成回复" });
@@ -1310,6 +1342,7 @@ const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: st
   ...(docPolicy ? [{ role: "system" as const, content: docPolicy }] : []),
   ...(summary ? [{ role: "system" as const, content: `对话摘要：\n${summary}` }] : []),
   ...(contextText ? [{ role: "system" as const, content: contextText }] : []),
+  ...(apiContextText ? [{ role: "system" as const, content: apiContextText }] : []),
   ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
 ];
 onProgress?.({ stage: "chat", message: "生成回复" });

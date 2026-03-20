@@ -39,7 +39,8 @@ function getSessionId() {
 getSessionId._mem = "";
 
 function safeLinkHref(href) {
-  const raw = String(href || "").trim();
+  if (typeof href !== "string") return "";
+  const raw = href.trim();
   if (!raw) return "";
   try {
     const u = new URL(raw, window.location.origin);
@@ -49,7 +50,15 @@ function safeLinkHref(href) {
 }
 
 const mdRenderer = new marked.Renderer();
-mdRenderer.link = (href, title, text) => {
+mdRenderer.link = (...args) => {
+  let href, title, text;
+  if (args[0] && typeof args[0] === "object") {
+    href = args[0].href;
+    title = args[0].title;
+    text = args[0].text ?? args[0].href ?? "";
+  } else {
+    [href, title, text] = args;
+  }
   const safeHref = safeLinkHref(href);
   const safeTitle = title ? String(title) : "";
   const t = String(text || "");
