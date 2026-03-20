@@ -334,10 +334,12 @@ function getProcessingWarnings(result: any): ProcessingWarning[] {
     .filter((w: ProcessingWarning) => Boolean(String(w?.message || "").trim()));
 }
 
-function hasContentRangeMissingWarning(warnings: ProcessingWarning[]): boolean {
+function needsPrefetchFallback(warnings: ProcessingWarning[]): boolean {
   for (const w of warnings) {
     const msg = String(w?.message || "");
     if (msg.includes("Content-Range") && msg.toLowerCase().includes("missing")) return true;
+    if (msg.includes("Failed to initialize embedding model")) return true;
+    if (msg.toLowerCase().includes("plugin error") && msg.toLowerCase().includes("embeddings")) return true;
   }
   return false;
 }
@@ -426,7 +428,7 @@ async function ensureKreuzbergReady(preset: string, cacheDir: string, hubCache: 
       let { embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint);
       if (embedding) return;
 
-      if (hasContentRangeMissingWarning(warnings)) {
+      if (needsPrefetchFallback(warnings)) {
         cleanupPartialFiles(cacheDir);
         cleanupPartialFiles(hubCache);
         const endpointForPrefetch = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || DEFAULT_HF_ENDPOINT;
@@ -442,7 +444,7 @@ async function ensureKreuzbergReady(preset: string, cacheDir: string, hubCache: 
         ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint));
         if (embedding) return;
 
-        if (hasContentRangeMissingWarning(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
+        if (needsPrefetchFallback(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
           try {
             await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: cacheDir });
             await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: hubCache });
@@ -618,7 +620,7 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
         continue;
       }
 
-      if (hasContentRangeMissingWarning(warnings)) {
+      if (needsPrefetchFallback(warnings)) {
         cleanupPartialFiles(cacheDir);
         cleanupPartialFiles(hubCache);
         const endpointForPrefetch = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || DEFAULT_HF_ENDPOINT;
@@ -637,7 +639,7 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
           continue;
         }
 
-        if (hasContentRangeMissingWarning(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
+        if (needsPrefetchFallback(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
           try {
             await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: cacheDir });
             await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: hubCache });

@@ -1118,6 +1118,16 @@ const AGENTS_DIR = path.resolve(process.cwd(), "agent/skills");
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 const NODE_MODULES_DIR = path.resolve(process.cwd(), "node_modules");
 const OUTPUT_DIR = path.resolve(process.cwd(), "output");
+
+function saveAndGetUrl(filename: string | null, content: string, mimeType: string, host: string): string {
+  const ext = mimeType === "application/pdf" || mimeType.includes("markdown") ? ".md" : ".txt";
+  const base = (filename || "upload").replace(/\.[^/.]+$/, "");
+  const outFilename = `${Date.now()}_${base}${ext}`;
+  const outPath = path.join(OUTPUT_DIR, "pdf-conversion", outFilename);
+  mkdirSync(path.dirname(outPath), { recursive: true });
+  writeFileSync(outPath, content, "utf8");
+  return `http://${host}/outputs/pdf-conversion/${outFilename}`;
+}
 const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 let cachedCatalog: Catalog | null = null;
@@ -1232,15 +1242,17 @@ type DocumentContext = {
   content: string;
   contentChars: number;
   truncated: boolean;
+  url?: string;
 };
 
 function buildDocumentBlock(doc: DocumentContext) {
   const name = doc.filename || "upload";
   const truncated = doc.truncated ? "，已截断" : "";
+  const urlInfo = doc.url ? `，下载地址: ${doc.url}` : "";
   return [
     "",
     "---",
-    `用户上传的参考文档（${name}，${doc.mimeType}，提取文本 ${doc.contentChars} 字符${truncated}）：`,
+    `用户上传的参考文档（${name}，${doc.mimeType}，提取文本 ${doc.contentChars} 字符${truncated}${urlInfo}）：`,
     '"""',
     doc.content,
     '"""',
@@ -2634,12 +2646,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }
           const rawContent = String((extracted as any)?.content || "");
           const content = rawContent.slice(0, perMaxChars);
+          const downloadUrl = saveAndGetUrl(file.filename, rawContent, mimeType, host);
           docs.push({
             filename: file.filename,
             mimeType,
             content,
             contentChars: rawContent.length,
             truncated: rawContent.length > perMaxChars,
+            url: downloadUrl,
           });
         }
         for (let i = 0; i < urls.length; i++) {
@@ -2697,12 +2711,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }
           const rawContent = String((extracted as any)?.content || "");
           const content = rawContent.slice(0, perMaxChars);
+          const downloadUrl = saveAndGetUrl(filename, rawContent, mimeType, host);
           docs.push({
             filename,
             mimeType,
             content,
             contentChars: rawContent.length,
             truncated: rawContent.length > perMaxChars,
+            url: downloadUrl,
           });
         }
         const doc = docs[0] || null;

@@ -5,7 +5,7 @@ import { convert } from "@opendataloader/pdf";
 
 function parseArgs(argv: string[]) {
   const inputs: string[] = [];
-  let outputDir = "output/opendataloader-pdf";
+  let outputDir = "output/pdf-conversion";
   let format = "markdown,json";
 
   for (let i = 0; i < argv.length; i++) {
