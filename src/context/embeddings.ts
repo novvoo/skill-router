@@ -5,7 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 
 const VALID_PRESETS = new Set(["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"]);
 const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
-const DEFAULT_HF_ENDPOINT = "https://huggingface.co";
+const DEFAULT_HF_ENDPOINT = "https://hf-mirror.com";
 
 let lastEmbeddingDim = 384;
 let hfCacheRepaired = false;
