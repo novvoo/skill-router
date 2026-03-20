@@ -424,6 +424,36 @@
         </div>
 
         <div class="section">
+          <div class="sectionTitle">OCR (Tesseract/Guten-OCR)</div>
+          <div class="row">
+            <div>
+              <label>OCR_BACKEND</label>
+              <select id="ocrBackend" autocomplete="off">
+                <option value="">(跟随服务端默认)</option>
+                <option value="tesseract">tesseract</option>
+                <option value="guten-ocr">guten-ocr</option>
+              </select>
+            </div>
+            <div>
+              <label>OCR_LANGUAGE</label>
+              <input id="ocrLanguage" type="text" autocomplete="off" placeholder="eng / chi_sim / chi_sim+eng" />
+            </div>
+          </div>
+          <div style="margin-top: 10px;">
+            <label style="display: inline-flex; gap: 8px; align-items: center;">
+              <input id="ocrAutoDownload" type="checkbox" />
+              <span>缺少 tesseract 时自动下载/初始化 guten-ocr 并回退</span>
+            </label>
+          </div>
+          <div class="btns">
+            <button id="refreshOcr" class="secondary">刷新状态</button>
+            <button id="downloadOcr" class="secondary">下载/初始化 guten-ocr</button>
+          </div>
+          <div id="ocrHint" class="hint" style="margin-top: 8px;"></div>
+          <div id="ocrList" class="memTree" style="margin-top: 10px;"></div>
+        </div>
+
+        <div class="section">
           <div class="sectionTitle">上下文与记忆 (Context & Memory)</div>
           <div class="btns">
             <button id="refreshMemories" class="secondary">刷新列表</button>

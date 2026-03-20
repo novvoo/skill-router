@@ -1,5 +1,6 @@
 import http from "node:http";
 import path from "node:path";
+import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import Busboy from "busboy";
 import { extractBytes, getEmbeddingPreset } from "@kreuzberg/node";
@@ -72,6 +73,22 @@ type EmbeddingDownloadJob = {
 const embeddingJobs = new Map<EmbeddingPreset, EmbeddingDownloadJob>();
 const EMBEDDING_LOG_MAX = 200;
 const EMBEDDING_LOG_TAIL = 30;
+
+type OcrBackendName = "guten-ocr";
+type OcrDownloadStatus = "not_downloaded" | "downloading" | "downloaded" | "error";
+type OcrDownloadJob = {
+  backend: OcrBackendName;
+  language: string;
+  status: OcrDownloadStatus;
+  error?: string;
+  logs: string[];
+  started_at: number;
+  updated_at: number;
+};
+const ocrJobs = new Map<OcrBackendName, OcrDownloadJob>();
+const OCR_LOG_MAX = 200;
+const OCR_LOG_TAIL = 30;
+let gutenOcrInitPromise: Promise<void> | null = null;
 
 type ProcessingWarning = { source?: string; message?: string };
 
@@ -196,6 +213,13 @@ function appendEmbeddingLog(job: EmbeddingDownloadJob, message: string) {
   console.log(line);
 }
 
+function appendOcrLog(job: OcrDownloadJob, message: string) {
+  const line = `[${new Date().toISOString()}] ${message}`;
+  job.logs.push(line);
+  if (job.logs.length > OCR_LOG_MAX) job.logs.splice(0, job.logs.length - OCR_LOG_MAX);
+  console.log(line);
+}
+
 function normalizeHfEndpoint(raw: unknown): string | null {
   const v0 = String(raw || "").trim();
   if (!v0) return null;
@@ -237,6 +261,121 @@ function setHfCacheEnvForCacheDir(cacheDir: string) {
   process.env.HF_HUB_CACHE = hubCache;
   process.env.HUGGINGFACE_HUB_CACHE = hubCache;
   return hubCache;
+}
+
+async function isTesseractAvailable() {
+  const timeoutMs = Number(String(process.env.TESSERACT_CHECK_TIMEOUT_MS || "").trim() || "1500") || 1500;
+  return await new Promise<boolean>((resolve) => {
+    try {
+      execFile("tesseract", ["--version"], { timeout: timeoutMs }, (err) => resolve(!err));
+    } catch {
+      resolve(false);
+    }
+  });
+}
+
+function isMissingTesseractErrorMessage(raw: string) {
+  const s = String(raw || "");
+  return /tesseract|spawn|enoent|missingdependency|not\s+found|command\s+not\s+found/i.test(s);
+}
+
+async function ensureGutenOcrBackend(args?: { hfEndpoint?: string | null; job?: OcrDownloadJob | null }) {
+  if (gutenOcrInitPromise) return gutenOcrInitPromise;
+  gutenOcrInitPromise = (async () => {
+    const normalized = normalizeHfEndpoint(args?.hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+    if (normalized) process.env.HF_ENDPOINT = normalized;
+    const cacheDir = resolveKreuzbergCacheDir();
+    try {
+      mkdirSync(cacheDir, { recursive: true });
+    } catch {
+    }
+    setHfCacheEnvForCacheDir(cacheDir);
+    const mod: any = await import("@kreuzberg/node");
+    const GutenOcrBackend = mod?.GutenOcrBackend;
+    const registerOcrBackend = mod?.registerOcrBackend;
+    const listOcrBackends = mod?.listOcrBackends;
+    if (!GutenOcrBackend || !registerOcrBackend || !listOcrBackends) throw new Error("guten-ocr backend is not available in @kreuzberg/node");
+    const backends: string[] = Array.isArray(listOcrBackends()) ? listOcrBackends() : [];
+    if (backends.includes("guten-ocr")) return;
+    args?.job && appendOcrLog(args.job, `[ocr] initializing guten-ocr cache=${cacheDir} hf=${normalized || "(default)"}`);
+    const backend = new GutenOcrBackend();
+    await backend.initialize();
+    registerOcrBackend(backend);
+    args?.job && appendOcrLog(args.job, `[ocr] guten-ocr registered`);
+  })();
+  return gutenOcrInitPromise;
+}
+
+async function downloadGutenOcr(args: { hfEndpoint: string | null; language: string; force: boolean; job: OcrDownloadJob }) {
+  if (args.force) gutenOcrInitPromise = null;
+  const startedAt = Date.now();
+  try {
+    args.job.status = "downloading";
+    args.job.error = undefined;
+    args.job.updated_at = Date.now();
+    appendOcrLog(args.job, `[ocr] download request backend=${args.job.backend} lang=${args.language} hf=${args.hfEndpoint || "(default)"} force=${args.force ? "1" : "0"}`);
+    await ensureGutenOcrBackend({ hfEndpoint: args.hfEndpoint, job: args.job });
+    args.job.status = "downloaded";
+    args.job.error = undefined;
+  } catch (e: any) {
+    args.job.status = "error";
+    args.job.error = String(e?.message || e);
+  } finally {
+    args.job.updated_at = Date.now();
+    const ms = args.job.updated_at - startedAt;
+    appendOcrLog(args.job, `[ocr] download done backend=${args.job.backend} status=${args.job.status} ms=${ms}${args.job.error ? ` err=${args.job.error}` : ""}`);
+  }
+}
+
+async function extractBytesWithOcrFallback(
+  data: Uint8Array,
+  mimeType: string,
+  opts: { ocrBackend?: string | null; ocrLanguage?: string | null; ocrAutoDownload?: boolean; hfEndpoint?: string | null },
+) {
+  const cfg0 = buildKreuzbergExtractConfig({ mimeType, ocrBackend: opts.ocrBackend, ocrLanguage: opts.ocrLanguage });
+  try {
+    return await extractBytes(data, mimeType, cfg0 || undefined);
+  } catch (e: any) {
+    const msg = String(e?.message || e);
+    const mt = String(mimeType || "").toLowerCase();
+    const backend = normalizeOcrBackend(opts.ocrBackend) || normalizeOcrBackend(readEnvString("DOCUMENT_OCR_BACKEND")) || "tesseract";
+    const auto = Boolean(opts.ocrAutoDownload);
+    if (mt.startsWith("image/") && backend === "tesseract" && auto && isMissingTesseractErrorMessage(msg)) {
+      const jobExisting = ocrJobs.get("guten-ocr");
+      const job =
+        jobExisting ||
+        ({
+          backend: "guten-ocr",
+          language: String(opts.ocrLanguage || "").trim() || "eng",
+          status: "downloading",
+          logs: [],
+          started_at: Date.now(),
+          updated_at: Date.now(),
+        } satisfies OcrDownloadJob);
+      if (!jobExisting) ocrJobs.set("guten-ocr", job);
+      await downloadGutenOcr({ hfEndpoint: opts.hfEndpoint || null, language: job.language, force: false, job });
+      const cfg1 = buildKreuzbergExtractConfig({ mimeType, ocrBackend: "guten-ocr", ocrLanguage: opts.ocrLanguage });
+      return await extractBytes(data, mimeType, cfg1 || undefined);
+    }
+    if (mt.startsWith("image/") && backend === "guten-ocr" && auto) {
+      const jobExisting = ocrJobs.get("guten-ocr");
+      const job =
+        jobExisting ||
+        ({
+          backend: "guten-ocr",
+          language: String(opts.ocrLanguage || "").trim() || "eng",
+          status: "downloading",
+          logs: [],
+          started_at: Date.now(),
+          updated_at: Date.now(),
+        } satisfies OcrDownloadJob);
+      if (!jobExisting) ocrJobs.set("guten-ocr", job);
+      await downloadGutenOcr({ hfEndpoint: opts.hfEndpoint || null, language: job.language, force: false, job });
+      const cfg1 = buildKreuzbergExtractConfig({ mimeType, ocrBackend: "guten-ocr", ocrLanguage: opts.ocrLanguage });
+      return await extractBytes(data, mimeType, cfg1 || undefined);
+    }
+    throw e;
+  }
 }
 
 function repairHfHubCache(cacheDir: string) {
@@ -431,6 +570,171 @@ async function readJsonBody(req: http.IncomingMessage, maxBytes: number) {
   return JSON.parse(text);
 }
 
+function normalizeFetchUrl(raw: string) {
+  const v = String(raw || "").trim();
+  if (!v) return null;
+  const prefixed = v.startsWith("http://") || v.startsWith("https://") ? v : v.startsWith("www.") ? `https://${v}` : `https://${v}`;
+  try {
+    const u = new URL(prefixed);
+    if (u.protocol !== "http:" && u.protocol !== "https:") return null;
+    return u.toString();
+  } catch {
+    return null;
+  }
+}
+
+function parseUrlList(input: any) {
+  if (Array.isArray(input)) {
+    return input
+      .map((x) => String(x || "").trim())
+      .filter(Boolean)
+      .slice(0, 30);
+  }
+  const raw = String(input || "").trim();
+  if (!raw) return [];
+  const parts = raw
+    .split(/[\s\r\n,;]+/g)
+    .map((x) => String(x || "").trim())
+    .filter(Boolean);
+  return parts.slice(0, 30);
+}
+
+function filenameFromUrl(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+    const p = u.pathname || "";
+    const base = path.posix.basename(p);
+    const cleaned = String(base || "").trim();
+    if (cleaned && cleaned !== "/" && cleaned !== ".") return cleaned;
+  } catch {
+  }
+  return "download";
+}
+
+function mimeTypeFromContentTypeHeader(v: string | null | undefined) {
+  const raw = String(v || "").trim().toLowerCase();
+  if (!raw) return "";
+  return raw.split(";")[0]?.trim() || "";
+}
+
+async function fetchUrlToBuffer(url: string, maxBytes: number) {
+  const timeoutMs = Number(String(process.env.DOCUMENT_URL_FETCH_TIMEOUT_MS || "").trim() || "60000") || 60_000;
+  const controller = new AbortController();
+  const t = setTimeout(() => controller.abort(), timeoutMs);
+  let resp: Response;
+  try {
+    resp = await fetch(url, { redirect: "follow", signal: controller.signal });
+  } catch (e: any) {
+    throw new Error(`fetch failed: ${String(e?.message || e)}`);
+  } finally {
+    clearTimeout(t);
+  }
+  if (!resp.ok) throw new Error(`fetch failed: ${resp.status} ${resp.statusText}`);
+  const contentLength = Number(String(resp.headers.get("content-length") || "").trim() || "0") || 0;
+  if (contentLength > 0 && contentLength > maxBytes) throw new Error("file too large");
+  const reader = resp.body?.getReader?.();
+  if (!reader) {
+    const ab = await resp.arrayBuffer();
+    const buf = Buffer.from(ab);
+    if (buf.byteLength > maxBytes) throw new Error("file too large");
+    return { data: buf, url: resp.url, contentType: resp.headers.get("content-type") };
+  }
+  const chunks: Buffer[] = [];
+  let total = 0;
+  while (true) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    if (!value) continue;
+    const b = Buffer.from(value);
+    total += b.byteLength;
+    if (total > maxBytes) {
+      try {
+        controller.abort();
+      } catch {
+      }
+      throw new Error("file too large");
+    }
+    chunks.push(b);
+  }
+  return { data: Buffer.concat(chunks), url: resp.url, contentType: resp.headers.get("content-type") };
+}
+
+function isCandidateDocumentUrl(urlStr: string) {
+  try {
+    const u = new URL(urlStr);
+    const ext = String(path.posix.extname(u.pathname || "") || "")
+      .toLowerCase()
+      .trim();
+    if (!ext) return false;
+    const ok = new Set([
+      ".pdf",
+      ".png",
+      ".jpg",
+      ".jpeg",
+      ".gif",
+      ".webp",
+      ".bmp",
+      ".tif",
+      ".tiff",
+      ".svg",
+      ".jp2",
+      ".jpx",
+      ".jpm",
+      ".mj2",
+      ".jbig2",
+      ".jb2",
+      ".pnm",
+      ".pbm",
+      ".pgm",
+      ".ppm",
+      ".txt",
+      ".md",
+      ".csv",
+      ".rtf",
+      ".docx",
+      ".xlsx",
+      ".pptx",
+      ".doc",
+      ".xls",
+      ".ppt",
+      ".epub",
+      ".odt",
+      ".ods",
+    ]);
+    return ok.has(ext);
+  } catch {
+    return false;
+  }
+}
+
+function readEnvString(name: string) {
+  const v = String(process.env[name] || "").trim();
+  return v ? v : null;
+}
+
+function normalizeOcrBackend(raw: string | null | undefined) {
+  const v = String(raw || "").trim().toLowerCase();
+  if (!v) return null;
+  if (v === "0" || v === "false" || v === "off" || v === "no" || v === "none" || v === "disable" || v === "disabled") return null;
+  return v;
+}
+
+function buildKreuzbergExtractConfig(args: { mimeType: string; ocrBackend?: string | null; ocrLanguage?: string | null }) {
+  const mt = String(args.mimeType || "").toLowerCase();
+  if (!mt.startsWith("image/")) return null;
+  const backend =
+    normalizeOcrBackend(args.ocrBackend) ||
+    normalizeOcrBackend(readEnvString("DOCUMENT_OCR_BACKEND")) ||
+    normalizeOcrBackend(readEnvString("KREUZBERG_OCR_BACKEND")) ||
+    normalizeOcrBackend(readEnvString("OCR_BACKEND")) ||
+    "tesseract";
+  const language =
+    String(args.ocrLanguage || "").trim() ||
+    String(readEnvString("DOCUMENT_OCR_LANGUAGE") || readEnvString("KREUZBERG_OCR_LANGUAGE") || readEnvString("OCR_LANGUAGE") || "eng").trim();
+  if (!backend) return null;
+  return { ocr: { backend, language } } as any;
+}
+
 function mimeTypeFromFilename(filename: string | null | undefined) {
   const name = String(filename || "").toLowerCase();
   const ext = path.extname(name);
@@ -456,7 +760,24 @@ function mimeTypeFromFilename(filename: string | null | undefined) {
     ".jpeg": "image/jpeg",
     ".gif": "image/gif",
     ".webp": "image/webp",
+    ".bmp": "image/bmp",
+    ".tif": "image/tiff",
+    ".tiff": "image/tiff",
+    ".svg": "image/svg+xml",
+    ".jp2": "image/jp2",
+    ".jpx": "image/jpx",
+    ".jpm": "image/jpm",
+    ".mj2": "video/mj2",
+    ".jbig2": "image/jbig2",
+    ".jb2": "image/jbig2",
+    ".pnm": "image/x-portable-pixmap",
+    ".pbm": "image/x-portable-pixmap",
+    ".pgm": "image/x-portable-pixmap",
+    ".ppm": "image/x-portable-pixmap",
     ".zip": "application/zip",
+    ".epub": "application/epub+zip",
+    ".odt": "application/vnd.oasis.opendocument.text",
+    ".ods": "application/vnd.oasis.opendocument.spreadsheet",
   };
   return map[ext] || null;
 }
@@ -483,6 +804,27 @@ function mimeTypeFromBytes(data: Buffer) {
     if (head6 === "GIF87a" || head6 === "GIF89a") return "image/gif";
   }
   if (data.byteLength >= 12 && data.slice(0, 4).toString("ascii") === "RIFF" && data.slice(8, 12).toString("ascii") === "WEBP") return "image/webp";
+  if (data.byteLength >= 2 && data[0] === 0x42 && data[1] === 0x4d) return "image/bmp";
+  if (data.byteLength >= 4) {
+    if (data[0] === 0x49 && data[1] === 0x49 && data[2] === 0x2a && data[3] === 0x00) return "image/tiff";
+    if (data[0] === 0x4d && data[1] === 0x4d && data[2] === 0x00 && data[3] === 0x2a) return "image/tiff";
+  }
+  if (
+    data.byteLength >= 12 &&
+    data[0] === 0x00 &&
+    data[1] === 0x00 &&
+    data[2] === 0x00 &&
+    data[3] === 0x0c &&
+    data[4] === 0x6a &&
+    data[5] === 0x50 &&
+    data[6] === 0x20 &&
+    data[7] === 0x20 &&
+    data[8] === 0x0d &&
+    data[9] === 0x0a &&
+    data[10] === 0x87 &&
+    data[11] === 0x0a
+  )
+    return "image/jp2";
   if (data.byteLength >= 4) {
     const b0 = data[0];
     const b1 = data[1];
@@ -517,6 +859,15 @@ function resolveMimeType(args: { provided: string; fileMimeType?: string | null;
   if (fileMime && fileMime !== "application/octet-stream") return fileMime;
   if (fileMime) return fileMime;
   return "";
+}
+
+function normalizeDocumentExtractErrorMessage(e: any, mimeType: string) {
+  const raw = String(e?.message || e || "");
+  const mt = String(mimeType || "").toLowerCase();
+  if (mt.startsWith("image/") && isMissingTesseractErrorMessage(raw)) {
+    return `当前运行环境未安装/未找到 tesseract，无法对图片执行 OCR。你可以：1) 安装 tesseract 并确保在 PATH 中可执行；或 2) 调用 /ocr/download 下载 guten-ocr 后端并在请求中指定 ocr_backend=guten-ocr（或开启 ocr_auto_download=1 自动下载）。原始错误：${raw}`;
+  }
+  return raw || "unknown error";
 }
 
 function buildAvailableSkillsPrompt(skills: SkillMeta[]) {
@@ -766,6 +1117,7 @@ function parseCatalogMarkdown(md: string): Catalog {
 const AGENTS_DIR = path.resolve(process.cwd(), "agent/skills");
 const PUBLIC_DIR = path.resolve(process.cwd(), "public");
 const NODE_MODULES_DIR = path.resolve(process.cwd(), "node_modules");
+const OUTPUT_DIR = path.resolve(process.cwd(), "output");
 const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 let cachedCatalog: Catalog | null = null;
@@ -1472,10 +1824,20 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
   if (ct.includes("multipart/form-data")) {
     const parsed = await parseMultipart(req, maxBytes);
     const files = parsed.files.filter((f) => f.fieldname === "file" || f.fieldname === "document");
-    if (!files.length) {
-      throw new Error("missing file field (file|document)");
-    }
+    const urlsRaw = parseUrlList(parsed.fields["url"] ?? parsed.fields["document_url"] ?? parsed.fields["documentUrl"] ?? "");
+    const urls = urlsRaw.map((u) => normalizeFetchUrl(u)).filter(Boolean) as string[];
+    if (!files.length && !urls.length) throw new Error("missing file field (file|document) or url/document_url");
     const out = [];
+    const ocrBackend = String(parsed.fields["ocr_backend"] || parsed.fields["ocrBackend"] || "");
+    const ocrLanguage = String(parsed.fields["ocr_language"] || parsed.fields["ocrLanguage"] || "");
+    const ocrAutoDownload = (() => {
+      const raw = String(parsed.fields["ocr_auto_download"] ?? parsed.fields["ocrAutoDownload"] ?? "").trim().toLowerCase();
+      if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+      const env = String(process.env.DOCUMENT_OCR_AUTO_DOWNLOAD || "").trim().toLowerCase();
+      if (!env) return false;
+      return !(env === "0" || env === "false" || env === "off" || env === "no");
+    })();
+    const hfEndpoint = normalizeHfEndpoint(parsed.fields["hf_endpoint"] ?? parsed.fields["hfEndpoint"] ?? req.headers["x-hf-endpoint"]) || null;
     for (const file of files) {
       const mimeType = resolveMimeType({
         provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
@@ -1485,8 +1847,32 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
       });
       if (!mimeType) throw new Error("mime_type is required");
       const uint8Array = new Uint8Array(file.data);
-      const result = await extractBytes(uint8Array, mimeType);
+      let result: any;
+      try {
+        result = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+      } catch (e: any) {
+        throw new Error(normalizeDocumentExtractErrorMessage(e, mimeType));
+      }
       out.push({ filename: file.filename, mime_type: mimeType, result });
+    }
+    for (const url of urls) {
+      const fetched = await fetchUrlToBuffer(url, maxBytes);
+      const filename = filenameFromUrl(fetched.url);
+      const mimeType = resolveMimeType({
+        provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
+        fileMimeType: mimeTypeFromContentTypeHeader(fetched.contentType),
+        filename,
+        data: fetched.data,
+      });
+      if (!mimeType) throw new Error("mime_type is required");
+      const uint8Array = new Uint8Array(fetched.data);
+      let result: any;
+      try {
+        result = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+      } catch (e: any) {
+        throw new Error(normalizeDocumentExtractErrorMessage(e, mimeType));
+      }
+      out.push({ filename, mime_type: mimeType, url: fetched.url, result });
     }
     if (out.length === 1) return sendJson(res, 200, out[0]);
     return sendJson(res, 200, { results: out });
@@ -1494,26 +1880,53 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
 
   if (ct.includes("application/json")) {
     const body: any = await readJsonBody(req, maxBytes);
-    const filename = String(body?.filename || "upload");
+    const urlIn = body?.url ?? body?.document_url ?? body?.documentUrl ?? null;
+    const url = urlIn ? normalizeFetchUrl(String(urlIn || "").trim()) : null;
+    const filename = String(body?.filename || (url ? filenameFromUrl(url) : "upload"));
     const base64 = body?.data_base64 || body?.dataBase64;
-    if (!base64) throw new Error("data_base64 is required");
-    const cleaned = String(base64 || "").trim().replace(/[\r\n\s]/g, "");
     let data: Buffer;
-    try {
-      data = Buffer.from(cleaned, "base64");
-    } catch {
-      throw new Error("invalid base64");
+    let fetchedUrl: string | null = null;
+    let fetchedContentType: string | null = null;
+    const ocrBackend = String(body?.ocr_backend ?? body?.ocrBackend ?? "");
+    const ocrLanguage = String(body?.ocr_language ?? body?.ocrLanguage ?? "");
+    const ocrAutoDownload = (() => {
+      const raw = String(body?.ocr_auto_download ?? body?.ocrAutoDownload ?? "").trim().toLowerCase();
+      if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+      const env = String(process.env.DOCUMENT_OCR_AUTO_DOWNLOAD || "").trim().toLowerCase();
+      if (!env) return false;
+      return !(env === "0" || env === "false" || env === "off" || env === "no");
+    })();
+    const hfEndpoint = normalizeHfEndpoint(body?.hf_endpoint ?? body?.hfEndpoint ?? req.headers["x-hf-endpoint"]) || null;
+    if (url) {
+      const fetched = await fetchUrlToBuffer(url, maxBytes);
+      data = fetched.data;
+      fetchedUrl = fetched.url;
+      fetchedContentType = fetched.contentType;
+    } else {
+      if (!base64) throw new Error("data_base64 or url is required");
+      const cleaned = String(base64 || "").trim().replace(/[\r\n\s]/g, "");
+      try {
+        data = Buffer.from(cleaned, "base64");
+      } catch {
+        throw new Error("invalid base64");
+      }
     }
     if (data.byteLength > maxBytes) throw new Error("file too large");
     const mimeType = resolveMimeType({
       provided: String(body?.mime_type || body?.mimeType || ""),
+      fileMimeType: mimeTypeFromContentTypeHeader(fetchedContentType),
       filename,
       data,
     });
     if (!mimeType) throw new Error("mime_type is required");
     const uint8Array = new Uint8Array(data);
-    const result = await extractBytes(uint8Array, mimeType);
-    return sendJson(res, 200, { filename, mime_type: mimeType, result });
+    let result: any;
+    try {
+      result = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+    } catch (e: any) {
+      throw new Error(normalizeDocumentExtractErrorMessage(e, mimeType));
+    }
+    return sendJson(res, 200, { filename, mime_type: mimeType, url: fetchedUrl, result });
   }
 
   throw new Error("unsupported Content-Type");
@@ -1548,6 +1961,64 @@ async function servePublicFile(res: http.ServerResponse, pathname: string) {
           : ext === ".json"
             ? "application/json; charset=utf-8"
             : "application/octet-stream";
+  return sendText(res, 200, ct, data);
+}
+
+async function serveOutputFile(res: http.ServerResponse, pathname: string) {
+  if (!pathname.startsWith("/outputs/") && pathname !== "/outputs") return null;
+  if (pathname === "/outputs" || pathname === "/outputs/") {
+    let entries: string[] = [];
+    try {
+      entries = readdirSync(OUTPUT_DIR, { withFileTypes: true })
+        .filter((e) => e.isFile() || e.isDirectory())
+        .map((e) => e.name)
+        .slice(0, 200);
+    } catch {
+      entries = [];
+    }
+    return sendJson(res, 200, { output_dir: "output/", entries });
+  }
+
+  let decoded: string;
+  try {
+    decoded = decodeURIComponent(pathname);
+  } catch {
+    return null;
+  }
+  const rel = decoded.replace(/^\/+/, "").replace(/^outputs\/+/, "");
+  if (!rel || rel.includes("..") || rel.includes("\\") || rel.includes("\0")) return null;
+
+  const abs = path.resolve(OUTPUT_DIR, rel);
+  const safeRel = path.relative(OUTPUT_DIR, abs);
+  if (!safeRel || safeRel.startsWith("..") || path.isAbsolute(safeRel)) return null;
+
+  let st: any;
+  try {
+    st = statSync(abs);
+  } catch {
+    return null;
+  }
+  if (!st || !st.isFile()) return null;
+
+  let data: Buffer;
+  try {
+    data = await readFile(abs);
+  } catch {
+    return null;
+  }
+
+  const ext = path.extname(abs).toLowerCase();
+  const ct =
+    ext === ".md"
+      ? "text/markdown; charset=utf-8"
+      : ext === ".json"
+        ? "application/json; charset=utf-8"
+        : ext === ".txt"
+          ? "text/plain; charset=utf-8"
+          : "application/octet-stream";
+
+  const filename = path.basename(abs);
+  res.setHeader("Content-Disposition", `attachment; filename="${filename.replace(/"/g, "")}"`);
   return sendText(res, 200, ct, data);
 }
 
@@ -1603,6 +2074,11 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (served !== null) return;
     }
 
+    if (req.method === "GET" && (url.pathname === "/outputs" || url.pathname.startsWith("/outputs/"))) {
+      const served = await serveOutputFile(res, url.pathname);
+      if (served !== null) return;
+    }
+
     if (req.method === "GET") {
       const accept = String(req.headers.accept || "");
       if (url.pathname === "/" ? accept.includes("text/html") : true) {
@@ -1617,11 +2093,14 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         endpoints: {
           skills: { method: "GET", path: "/skills" },
           choose: { method: "POST", path: "/choose", body: { query: "..." } },
-          run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file(s)+mime_type)" },
-          documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data | application/json(base64)" },
+          run: { method: "POST", path: "/run", body: "application/json({query|messages, document_url(s)?, ocr_*?}) | multipart/form-data(query+file(s)|document_url(s)+ocr_*?)" },
+          documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data(file|url + ocr_*?) | application/json(base64|url + ocr_*?)" },
+          outputs: { method: "GET", path: "/outputs/<relative-path>", note: "serve files under ./output/ as attachments" },
           memories: { method: "GET,POST,DELETE", path: "/memories" },
           embeddings_status: { method: "GET", path: "/embeddings/status" },
           embeddings_download: { method: "POST", path: "/embeddings/download", body: { preset: "fast", hf_endpoint: "https://hf-mirror.com", force: false } },
+          ocr_status: { method: "GET", path: "/ocr/status" },
+          ocr_download: { method: "POST", path: "/ocr/download", body: { backend: "guten-ocr", language: "eng", hf_endpoint: "https://hf-mirror.com", force: false } },
         },
       });
     }
@@ -1849,6 +2328,94 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return sendJson(res, 202, { ok: true, job });
     }
 
+    if (req.method === "GET" && url.pathname === "/ocr/status") {
+      const env = String(process.env.DOCUMENT_OCR_AUTO_DOWNLOAD || "").trim().toLowerCase();
+      const autoDownloadDefault = env ? !(env === "0" || env === "false" || env === "off" || env === "no") : false;
+      const tesseractAvailable = await isTesseractAvailable();
+      let gutenAvailable = false;
+      let gutenRegistered = false;
+      try {
+        const mod: any = await import("@kreuzberg/node");
+        gutenAvailable = Boolean(mod?.GutenOcrBackend);
+        const listOcrBackends = mod?.listOcrBackends;
+        const backends: string[] = listOcrBackends && Array.isArray(listOcrBackends()) ? listOcrBackends() : [];
+        gutenRegistered = backends.includes("guten-ocr");
+      } catch {
+      }
+      const job = ocrJobs.get("guten-ocr");
+      const status: OcrDownloadStatus = job?.status || "not_downloaded";
+      const logTail = job?.logs?.length ? job.logs.slice(-OCR_LOG_TAIL).join("\n") : "";
+      return sendJson(res, 200, {
+        backends: {
+          tesseract: { available: tesseractAvailable },
+          "guten-ocr": {
+            available: gutenAvailable,
+            registered: gutenRegistered,
+            status,
+            error: job?.error,
+            log_tail: logTail || undefined,
+          },
+        },
+        auto_download_default: autoDownloadDefault,
+      });
+    }
+
+    if (req.method === "POST" && url.pathname === "/ocr/download") {
+      const body: any = await readJsonBody(req, 1024 * 1024);
+      const backendRaw = String(body?.backend ?? body?.name ?? "").trim().toLowerCase() || "guten-ocr";
+      if (backendRaw !== "guten-ocr") return sendJson(res, 400, { error: `invalid backend: ${backendRaw}` });
+      const backend: OcrBackendName = "guten-ocr";
+      const force = Boolean(body?.force);
+      const language = String(body?.language ?? body?.ocr_language ?? body?.ocrLanguage ?? "eng").trim() || "eng";
+      const requestedHfEndpoint = normalizeHfEndpoint(body?.hf_endpoint ?? body?.hfEndpoint ?? req.headers["x-hf-endpoint"]);
+      if (requestedHfEndpoint) process.env.HF_ENDPOINT = requestedHfEndpoint;
+      const normalized = normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+      if (normalized && process.env.HF_ENDPOINT !== normalized) process.env.HF_ENDPOINT = normalized;
+      const hfEndpoint = normalized;
+
+      const existing = ocrJobs.get(backend);
+      if (existing && existing.status === "downloading") {
+        appendOcrLog(existing, `[ocr] already downloading backend=${backend}`);
+        return sendJson(res, 202, { ok: true, job: existing });
+      }
+
+      if (!force) {
+        try {
+          const mod: any = await import("@kreuzberg/node");
+          const listOcrBackends = mod?.listOcrBackends;
+          const backends: string[] = listOcrBackends && Array.isArray(listOcrBackends()) ? listOcrBackends() : [];
+          if (backends.includes("guten-ocr")) {
+            const now = Date.now();
+            const job: OcrDownloadJob = {
+              backend,
+              language,
+              status: "downloaded",
+              logs: [],
+              started_at: now,
+              updated_at: now,
+            };
+            ocrJobs.set(backend, job);
+            appendOcrLog(job, `[ocr] already downloaded backend=${backend}`);
+            return sendJson(res, 200, { ok: true, job });
+          }
+        } catch {
+        }
+      }
+
+      const now = Date.now();
+      const job: OcrDownloadJob = {
+        backend,
+        language,
+        status: "downloading",
+        logs: [],
+        started_at: now,
+        updated_at: now,
+      };
+      ocrJobs.set(backend, job);
+      void downloadGutenOcr({ hfEndpoint, language, force, job });
+      return sendJson(res, 202, { ok: true, job });
+    }
+
   if (req.method === "GET" && url.pathname === "/memories") {
       const config = getOpenAIConfigFromRequest(req);
       const sessionId = url.searchParams.get("sessionId") || undefined;
@@ -2005,22 +2572,36 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const hasSystemContentField = Object.prototype.hasOwnProperty.call(parsed.fields, "systemContent") || Object.prototype.hasOwnProperty.call(parsed.fields, "system_content");
         const systemContentFromBody = hasSystemContentField ? String(parsed.fields["systemContent"] || parsed.fields["system_content"] || "") : null;
         const files = Array.isArray(parsed.files) ? parsed.files.filter((f: any) => f && (f.fieldname === "file" || f.fieldname === "document")) : [];
-        if (!files.length) {
+        const urlsRaw = parseUrlList(parsed.fields["document_urls"] ?? parsed.fields["documentUrls"] ?? parsed.fields["document_url"] ?? parsed.fields["documentUrl"] ?? parsed.fields["url"] ?? "");
+        const urls = urlsRaw.map((u) => normalizeFetchUrl(u)).filter(Boolean) as string[];
+        if (!files.length && !urls.length) {
           if (wantsStream) {
-            writeSse(res, "error", { error: "missing file field (file|document)" });
+            writeSse(res, "error", { error: "missing file field (file|document) or document_url(s)" });
             writeSse(res, "done", {});
             return res.end();
           }
-          return sendJson(res, 400, { error: "missing file field (file|document)" });
+          return sendJson(res, 400, { error: "missing file field (file|document) or document_url(s)" });
         }
         const totalMaxChars = 60000;
+        const totalItems = files.length + urls.length;
         const perMaxChars =
-          files.length <= 1 ? totalMaxChars : Math.max(4000, Math.min(totalMaxChars, Math.floor(totalMaxChars / files.length)));
+          totalItems <= 1 ? totalMaxChars : Math.max(4000, Math.min(totalMaxChars, Math.floor(totalMaxChars / totalItems)));
         const docs: DocumentContext[] = [];
+        const providedMimeOverride = String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || "");
+        const ocrBackend = String(parsed.fields["ocr_backend"] || parsed.fields["ocrBackend"] || "");
+        const ocrLanguage = String(parsed.fields["ocr_language"] || parsed.fields["ocrLanguage"] || "");
+        const ocrAutoDownload = (() => {
+          const raw = String(parsed.fields["ocr_auto_download"] ?? parsed.fields["ocrAutoDownload"] ?? "").trim().toLowerCase();
+          if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+          const env = String(process.env.DOCUMENT_OCR_AUTO_DOWNLOAD || "").trim().toLowerCase();
+          if (!env) return false;
+          return !(env === "0" || env === "false" || env === "off" || env === "no");
+        })();
+        const hfEndpoint = normalizeHfEndpoint(parsed.fields["hf_endpoint"] ?? parsed.fields["hfEndpoint"] ?? req.headers["x-hf-endpoint"]) || null;
         for (let i = 0; i < files.length; i++) {
           const file = files[i];
           const mimeType = resolveMimeType({
-            provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
+            provided: providedMimeOverride,
             fileMimeType: file.mimeType,
             filename: file.filename,
             data: file.data,
@@ -2039,11 +2620,85 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
             data: { mime_type: mimeType, filename: file.filename },
           });
           const uint8Array = new Uint8Array(file.data);
-          const extracted = await extractBytes(uint8Array, mimeType);
+          let extracted: any;
+          try {
+            extracted = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+          } catch (e: any) {
+            const errMsg = normalizeDocumentExtractErrorMessage(e, mimeType);
+            if (wantsStream) {
+              writeSse(res, "error", { error: errMsg });
+              writeSse(res, "done", {});
+              return res.end();
+            }
+            throw new Error(errMsg);
+          }
           const rawContent = String((extracted as any)?.content || "");
           const content = rawContent.slice(0, perMaxChars);
           docs.push({
             filename: file.filename,
+            mimeType,
+            content,
+            contentChars: rawContent.length,
+            truncated: rawContent.length > perMaxChars,
+          });
+        }
+        for (let i = 0; i < urls.length; i++) {
+          const u = urls[i];
+          emit({
+            stage: "fetch_document",
+            message: totalItems > 1 ? `下载文档 URL (${files.length + i + 1}/${totalItems})` : "下载文档 URL",
+            data: { url: u },
+          });
+          let fetched: { data: Buffer; url: string; contentType: string | null };
+          try {
+            fetched = await fetchUrlToBuffer(u, maxBytes);
+          } catch (e: any) {
+            const errMsg = String(e?.message || e);
+            if (wantsStream) {
+              writeSse(res, "error", { error: errMsg });
+              writeSse(res, "done", {});
+              return res.end();
+            }
+            throw new Error(errMsg);
+          }
+          const filename = filenameFromUrl(fetched.url);
+          const mimeType = resolveMimeType({
+            provided: providedMimeOverride,
+            fileMimeType: mimeTypeFromContentTypeHeader(fetched.contentType),
+            filename,
+            data: fetched.data,
+          });
+          if (!mimeType) {
+            const errMsg = "mime_type is required";
+            if (wantsStream) {
+              writeSse(res, "error", { error: errMsg });
+              writeSse(res, "done", {});
+              return res.end();
+            }
+            return sendJson(res, 400, { error: errMsg });
+          }
+          emit({
+            stage: "extract_document",
+            message: totalItems > 1 ? `提取文档内容 (${files.length + i + 1}/${totalItems})` : "提取文档内容",
+            data: { mime_type: mimeType, filename, url: fetched.url },
+          });
+          const uint8Array = new Uint8Array(fetched.data);
+          let extracted: any;
+          try {
+            extracted = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+          } catch (e: any) {
+            const errMsg = normalizeDocumentExtractErrorMessage(e, mimeType);
+            if (wantsStream) {
+              writeSse(res, "error", { error: errMsg });
+              writeSse(res, "done", {});
+              return res.end();
+            }
+            throw new Error(errMsg);
+          }
+          const rawContent = String((extracted as any)?.content || "");
+          const content = rawContent.slice(0, perMaxChars);
+          docs.push({
+            filename,
             mimeType,
             content,
             contentChars: rawContent.length,
@@ -2144,6 +2799,105 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (systemContentFromBody !== null) config.systemContent = systemContentFromBody.trim() ? systemContentFromBody : undefined;
       emit({ stage: "run", message: "开始路由与执行" });
       try {
+        const maxBytes = 15 * 1024 * 1024;
+        const urlsExplicitRaw = parseUrlList(
+          body?.document_urls ?? body?.documentUrls ?? body?.doc_urls ?? body?.docUrls ?? body?.document_url ?? body?.documentUrl ?? body?.doc_url ?? body?.docUrl ?? "",
+        );
+        const urlsExplicit = urlsExplicitRaw.map((u) => normalizeFetchUrl(u)).filter(Boolean) as string[];
+        const autoEnabled = (() => {
+          if (Object.prototype.hasOwnProperty.call(body || {}, "auto_document_url")) return Boolean((body as any).auto_document_url);
+          if (Object.prototype.hasOwnProperty.call(body || {}, "autoDocumentUrl")) return Boolean((body as any).autoDocumentUrl);
+          return true;
+        })();
+        const scanText = (() => {
+          if (Array.isArray(messages) && messages.length) {
+            for (let i = messages.length - 1; i >= 0; i--) {
+              const m = messages[i];
+              if (m && m.role === "user") return String(m.content ?? m.text ?? "");
+            }
+          }
+          return query;
+        })();
+        const urlsAuto =
+          autoEnabled && !urlsExplicit.length
+            ? extractUrlsFromText(scanText)
+                .map((u) => normalizeFetchUrl(u))
+                .filter(Boolean)
+                .filter((u) => isCandidateDocumentUrl(u as string)) as string[]
+            : [];
+        const urlMax = Math.max(0, Math.floor(Number(String(process.env.DOCUMENT_URL_MAX || "").trim() || "2") || 2));
+        const urlsToFetch = (urlsExplicit.length ? urlsExplicit : urlsAuto).slice(0, urlMax || 0);
+
+        const totalMaxChars = 60000;
+        const perMaxChars =
+          urlsToFetch.length <= 1 ? totalMaxChars : Math.max(4000, Math.min(totalMaxChars, Math.floor(totalMaxChars / urlsToFetch.length)));
+        const docs: DocumentContext[] = [];
+        if (urlsToFetch.length) {
+          const providedMimeOverride = String(body?.mime_type || body?.mimeType || "");
+          const ocrBackend = String(body?.ocr_backend ?? body?.ocrBackend ?? "");
+          const ocrLanguage = String(body?.ocr_language ?? body?.ocrLanguage ?? "");
+          const ocrAutoDownload = (() => {
+            const raw = String(body?.ocr_auto_download ?? body?.ocrAutoDownload ?? "").trim().toLowerCase();
+            if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+            const env = String(process.env.DOCUMENT_OCR_AUTO_DOWNLOAD || "").trim().toLowerCase();
+            if (!env) return false;
+            return !(env === "0" || env === "false" || env === "off" || env === "no");
+          })();
+          const hfEndpoint = normalizeHfEndpoint(body?.hf_endpoint ?? body?.hfEndpoint ?? req.headers["x-hf-endpoint"]) || null;
+          const strict = Boolean(urlsExplicit.length);
+          for (let i = 0; i < urlsToFetch.length; i++) {
+            const u = urlsToFetch[i];
+            emit({
+              stage: "fetch_document",
+              message: urlsToFetch.length > 1 ? `下载文档 URL (${i + 1}/${urlsToFetch.length})` : "下载文档 URL",
+              data: { url: u },
+            });
+            let fetched: { data: Buffer; url: string; contentType: string | null };
+            try {
+              fetched = await fetchUrlToBuffer(u, maxBytes);
+            } catch (e: any) {
+              const errMsg = String(e?.message || e);
+              if (strict) throw new Error(errMsg);
+              continue;
+            }
+            const filename = filenameFromUrl(fetched.url);
+            const mimeType = resolveMimeType({
+              provided: providedMimeOverride,
+              fileMimeType: mimeTypeFromContentTypeHeader(fetched.contentType),
+              filename,
+              data: fetched.data,
+            });
+            if (!mimeType) {
+              const errMsg = "mime_type is required";
+              if (strict) throw new Error(errMsg);
+              continue;
+            }
+            emit({
+              stage: "extract_document",
+              message: urlsToFetch.length > 1 ? `提取文档内容 (${i + 1}/${urlsToFetch.length})` : "提取文档内容",
+              data: { mime_type: mimeType, filename, url: fetched.url },
+            });
+            const uint8Array = new Uint8Array(fetched.data);
+            let extracted: any;
+            try {
+              extracted = await extractBytesWithOcrFallback(uint8Array, mimeType, { ocrBackend, ocrLanguage, ocrAutoDownload, hfEndpoint });
+            } catch (e: any) {
+              const errMsg = normalizeDocumentExtractErrorMessage(e, mimeType);
+              if (strict) throw new Error(errMsg);
+              continue;
+            }
+            const rawContent = String((extracted as any)?.content || "");
+            const content = rawContent.slice(0, perMaxChars);
+            docs.push({
+              filename,
+              mimeType,
+              content,
+              contentChars: rawContent.length,
+              truncated: rawContent.length > perMaxChars,
+            });
+          }
+        }
+
         const memoryEnabled = (() => {
           if (Object.prototype.hasOwnProperty.call(body || {}, "use_memory")) return Boolean((body as any).use_memory);
           if (Object.prototype.hasOwnProperty.call(body || {}, "memory_enabled")) {
@@ -2158,13 +2912,34 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }
           return true;
         })();
-        const result = await runWithRouting(config, { query, messages, summary, memory: { enabled: memoryEnabled }, onProgress: emit });
+        const doc = docs[0] || null;
+        const result = await runWithRouting(config, { query, messages, summary, doc, docs, memory: { enabled: memoryEnabled }, onProgress: emit });
         if (wantsStream) {
-          writeSse(res, "result", result);
+          const documents = docs.map((d) => ({
+            filename: d.filename,
+            mime_type: d.mimeType,
+            content_chars: d.contentChars,
+            truncated: d.truncated,
+          }));
+          const payload =
+            documents.length === 1
+              ? { ...result, document: documents[0], documents }
+              : documents.length
+                ? { ...result, documents }
+                : result;
+          writeSse(res, "result", payload);
           writeSse(res, "done", {});
           return res.end();
         }
-        return sendJson(res, 200, result);
+        const documents = docs.map((d) => ({
+          filename: d.filename,
+          mime_type: d.mimeType,
+          content_chars: d.contentChars,
+          truncated: d.truncated,
+        }));
+        const payload =
+          documents.length === 1 ? { ...result, document: documents[0], documents } : documents.length ? { ...result, documents } : result;
+        return sendJson(res, 200, payload);
       } catch (e: any) {
         const errMsg = String(e?.message || e);
         if (wantsStream) {

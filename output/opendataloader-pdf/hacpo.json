@@ -1,0 +1,1010 @@
+{
+  "file name" : "hacpo.pdf",
+  "number of pages" : 3,
+  "author" : null,
+  "title" : null,
+  "creation date" : "D:20251011144758+08'00'",
+  "modification date" : null,
+  "kids" : [ {
+    "type" : "heading",
+    "id" : 18,
+    "level" : "Doctitle",
+    "page number" : 1,
+    "bounding box" : [ 56.693, 756.836, 293.649, 777.294 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "HACPO: Optimized Specification"
+  }, {
+    "type" : "paragraph",
+    "id" : 19,
+    "page number" : 1,
+    "bounding box" : [ 56.693, 712.351, 538.574, 750.378 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "This file refines the original HACPO (Hybrid Adaptive Contrastive Policy Optimization) objective: we 1) unify notation, 2) make clipping/PPO mechanics explicit, 3) define the contrastive term and weights, 4) give practical hyperparameter suggestions and 5) provide implementation notes and pseudocode."
+  }, {
+    "type" : "heading",
+    "id" : 20,
+    "level" : "Subtitle",
+    "page number" : 1,
+    "bounding box" : [ 56.693, 686.391, 150.929, 700.618 ],
+    "heading level" : 2,
+    "font" : "LMRoman10-Bold",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "Notation (unified)."
+  }, {
+    "type" : "list",
+    "id" : 21,
+    "level" : "1",
+    "page number" : 1,
+    "bounding box" : [ 68.867, 462.0, 538.574, 680.632 ],
+    "numbering style" : "unordered",
+    "number of list items" : 9,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 659.84, 229.859, 680.632 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• θ: policy parameters for πθ(y | x).",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 645.949, 361.914, 660.707 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• πref : reference / behavior policy (fixed when computing ratios).",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 620.573, 112.605, 635.038 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• ri(θ) =",
+      "kids" : [ {
+        "type" : "paragraph",
+        "id" : 12,
+        "page number" : 1,
+        "bounding box" : [ 116.592, 607.412, 165.145, 638.271 ],
+        "font" : "CMMI10",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : "πθ(yi | xi) πref(yi | xi)"
+      }, {
+        "type" : "paragraph",
+        "id" : 14,
+        "page number" : 1,
+        "bounding box" : [ 169.667, 620.573, 420.177, 635.038 ],
+        "font" : "LMRoman10-Regular",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : ": importance / policy ratio for supervised sample (xi,yi)."
+      } ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 586.788, 120.693, 602.536 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• rj(k)(θ) =",
+      "kids" : [ {
+        "type" : "paragraph",
+        "id" : 15,
+        "page number" : 1,
+        "bounding box" : [ 124.681, 574.91, 181.336, 605.768 ],
+        "font" : "CMMI10",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : "πθ(yj,k | xj) πref(yj,k | xj)"
+      }, {
+        "type" : "paragraph",
+        "id" : 17,
+        "page number" : 1,
+        "bounding box" : [ 185.858, 588.07, 520.055, 602.536 ],
+        "font" : "LMRoman10-Regular",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : ": ratio for the k-th contrastive (negative) sample associated with context xj."
+      } ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 548.376, 538.574, 574.448 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Aˆi: estimated (possibly generalized) advantage for sample i. Use the same notation for all advantages for clarity.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 521.776, 462.058, 542.568 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• wj,k ≥ 0: weight for contrastive sample yj,k; we require k wj,k = 1 for each context j.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 501.85, 373.956, 522.642 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Clip interval parameter ϵ > 0; define clipϵ(r) = clip(r, 1 − ϵ, 1 + ϵ).",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 488.252, 343.404, 502.717 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• LCPO : contrastive policy optimization loss (defined below).",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 462.0, 503.666, 482.792 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• DKL(πref∥πθ) : KL divergence used as a constraint/penalty. (See note about direction and sign.)",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "heading",
+    "id" : 22,
+    "level" : "Doctitle",
+    "page number" : 1,
+    "bounding box" : [ 56.693, 434.457, 123.905, 454.915 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Objective"
+  }, {
+    "type" : "paragraph",
+    "id" : 23,
+    "page number" : 1,
+    "bounding box" : [ 56.693, 401.927, 538.584, 427.999 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "We present the HACPO objective in a form consistent with PPO-style clipping and with an explicit contrastive term."
+  }, {
+    "type" : "paragraph",
+    "id" : 25,
+    "page number" : 1,
+    "bounding box" : [ 192.201, 364.866, 367.773, 384.42 ],
+    "font" : "CMR10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "i,yi)∼D αi · min ri(θ)Aˆi, clipϵ(ri(θ))Aˆi"
+  }, {
+    "type" : "paragraph",
+    "id" : 24,
+    "page number" : 1,
+    "bounding box" : [ 114.447, 370.246, 192.195, 383.596 ],
+    "font" : "CMR7",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "JHACPO(θ) = E(x"
+  }, {
+    "type" : "paragraph",
+    "id" : 28,
+    "page number" : 1,
+    "bounding box" : [ 263.4, 351.854, 354.694, 361.729 ],
+    "font" : "LMRoman7-Regular",
+    "font size" : 6.974,
+    "text color" : "[0.0]",
+    "content" : "supervised/PPO-clip term"
+  }, {
+    "type" : "paragraph",
+    "id" : 30,
+    "page number" : 1,
+    "bounding box" : [ 278.168, 339.661, 284.856, 346.634 ],
+    "font" : "CMMI7",
+    "font size" : 6.974,
+    "text color" : "[0.0]",
+    "content" : "K"
+  }, {
+    "type" : "paragraph",
+    "id" : 32,
+    "page number" : 1,
+    "bounding box" : [ 290.665, 324.43, 466.905, 339.355 ],
+    "font" : "CMR10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "wi,k min ri(k)(θ)Aˆ(ik), clipϵ(ri(k)(θ))Aˆ(ik)"
+  }, {
+    "type" : "paragraph",
+    "id" : 38,
+    "level" : "3",
+    "page number" : 1,
+    "bounding box" : [ 525.85, 324.337, 538.582, 338.454 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "(1)"
+  }, {
+    "type" : "paragraph",
+    "id" : 29,
+    "level" : "2",
+    "page number" : 1,
+    "bounding box" : [ 219.992, 319.386, 272.293, 336.671 ],
+    "font" : "CMR10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "+ (1 − αi) ·"
+  }, {
+    "type" : "paragraph",
+    "id" : 31,
+    "page number" : 1,
+    "bounding box" : [ 274.514, 315.225, 289.002, 322.198 ],
+    "font" : "CMR7",
+    "font size" : 6.974,
+    "text color" : "[0.0]",
+    "content" : "k=1"
+  }, {
+    "type" : "paragraph",
+    "id" : 35,
+    "page number" : 1,
+    "bounding box" : [ 301.303, 300.199, 446.56, 310.074 ],
+    "font" : "LMRoman7-Regular",
+    "font size" : 6.974,
+    "text color" : "[0.0]",
+    "content" : "contrastive importance-sampled PPO-clip"
+  }, {
+    "type" : "paragraph",
+    "id" : 36,
+    "level" : "2",
+    "page number" : 1,
+    "bounding box" : [ 182.909, 283.249, 214.165, 296.599 ],
+    "font" : "CMR10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "+ γ Ex"
+  }, {
+    "type" : "paragraph",
+    "id" : 37,
+    "page number" : 1,
+    "bounding box" : [ 182.909, 261.591, 355.316, 295.154 ],
+    "font" : "CMMI10",
+    "font size" : 6.974,
+    "text color" : "[0.0]",
+    "content" : "i∼D,{yi,k}∼A LCPO(θ; xi,{yi,k}) − βKL DKL πref ∥ πθ ."
+  }, {
+    "type" : "paragraph",
+    "id" : 39,
+    "page number" : 1,
+    "bounding box" : [ 56.693, 207.693, 538.592, 264.41 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "Notes on signs and KL direction: Many RL formulations either maximize an objective (PPO) or minimize a loss. Above we write JHACPO as an objective to maximize; the KL term is written as a penalty by subtracting βKLDKL(πref∥πθ). If you implement using gradient descent on a loss, negate JHACPO accordingly. We use DKL(πref∥πθ) so that the penalty encourages πθ to stay close to the reference policy [?]."
+  }, {
+    "type" : "heading",
+    "id" : 40,
+    "level" : "Subtitle",
+    "page number" : 1,
+    "bounding box" : [ 56.693, 179.653, 211.882, 200.607 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Contrastive loss: LCPO"
+  }, {
+    "type" : "paragraph",
+    "id" : 41,
+    "page number" : 1,
+    "bounding box" : [ 56.693, 147.62, 538.574, 173.692 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "One practical choice for the contrastive policy loss (inspired by InfoNCE-style contrastive objectives, adapted to policies) is:"
+  }, {
+    "type" : "paragraph",
+    "id" : 46,
+    "page number" : 1,
+    "bounding box" : [ 71.637, 92.775, 99.891, 106.892 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "where:"
+  }, {
+    "type" : "paragraph",
+    "id" : 43,
+    "page number" : 1,
+    "bounding box" : [ 252.544, 108.29, 449.089, 137.935 ],
+    "font" : "CMMI10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "exp sθ(x,y+)/τc exp sθ(x,y+)/τc + Kk=1 exp sθ(x,yk−)/τc"
+  }, {
+    "type" : "paragraph",
+    "id" : 45,
+    "page number" : 1,
+    "bounding box" : [ 455.352, 118.828, 538.582, 132.945 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : ", (2)"
+  }, {
+    "type" : "paragraph",
+    "id" : 42,
+    "page number" : 1,
+    "bounding box" : [ 137.156, 112.153, 249.542, 129.438 ],
+    "font" : "CMR10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "LCPO(θ;x,{yk}) = −log"
+  }, {
+    "type" : "list",
+    "id" : 47,
+    "level" : "1",
+    "page number" : 1,
+    "bounding box" : [ 68.867, 72.849, 340.022, 86.966 ],
+    "numbering style" : "unordered",
+    "number of list items" : 1,
+    "next list id" : 49,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 1,
+      "bounding box" : [ 68.867, 72.849, 340.022, 86.966 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• y+ is the positive (target) sample (usually the reference y),",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "footer",
+    "id" : 48,
+    "page number" : 1,
+    "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+    "kids" : [ {
+      "type" : "heading",
+      "id" : 4,
+      "page number" : 1,
+      "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+      "heading level" : 3,
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "1"
+    } ]
+  }, {
+    "type" : "list",
+    "id" : 49,
+    "level" : "1",
+    "page number" : 2,
+    "bounding box" : [ 68.867, 717.973, 457.867, 772.289 ],
+    "numbering style" : "unordered",
+    "number of list items" : 3,
+    "previous list id" : 47,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 756.313, 399.379, 772.289 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• yk− are negative samples drawn from A (or from the current mini-batch),",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 737.899, 457.867, 752.364 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• sθ(x,y) = log πθ(y x) (or any scalar scoring function correlated with log-probability),",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 717.973, 306.953, 732.439 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• τc > 0 is a temperature for the contrastive softmax.",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "paragraph",
+    "id" : 50,
+    "page number" : 2,
+    "bounding box" : [ 56.693, 686.441, 538.584, 712.513 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "This choice encourages the policy to assign higher relative probability to positive examples than to negatives. Alternatively, you can use margin-based or pairwise losses depending on your task."
+  }, {
+    "type" : "heading",
+    "id" : 51,
+    "level" : "Doctitle",
+    "page number" : 2,
+    "bounding box" : [ 56.693, 651.726, 366.488, 672.681 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Weights wi,k and negative sampling strategy"
+  }, {
+    "type" : "list",
+    "id" : 52,
+    "level" : "1",
+    "page number" : 2,
+    "bounding box" : [ 68.867, 522.945, 538.591, 645.826 ],
+    "numbering style" : "unordered",
+    "number of list items" : 3,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 631.3, 313.684, 645.826 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Uniform weights: wi,k = 1/K is simple and stable.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 599.768, 538.591, 625.9 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Similarity-based weights: compute similarity scores (e.g. using sθ or an auxiliary encoder) and convert to weights via softmax:",
+      "kids" : [ {
+        "type" : "paragraph",
+        "id" : 7,
+        "page number" : 2,
+        "bounding box" : [ 242.925, 580.531, 259.473, 591.24 ],
+        "font" : "CMMI7",
+        "font size" : 6.974,
+        "text color" : "[0.0]",
+        "content" : "wi,k"
+      }, {
+        "type" : "paragraph",
+        "id" : 8,
+        "page number" : 2,
+        "bounding box" : [ 290.674, 570.358, 368.718, 598.612 ],
+        "font" : "CMR10",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : "exp ϕ(xi,yi,k) K ℓ=1 exp ϕ(xi,yi,ℓ)"
+      }, {
+        "type" : "paragraph",
+        "id" : 10,
+        "level" : "2",
+        "page number" : 2,
+        "bounding box" : [ 374.489, 581.277, 377.249, 591.24 ],
+        "font" : "CMMI10",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : "."
+      }, {
+        "type" : "paragraph",
+        "id" : 11,
+        "page number" : 2,
+        "bounding box" : [ 81.599, 554.826, 231.277, 568.943 ],
+        "font" : "LMRoman10-Regular",
+        "font size" : 9.963,
+        "text color" : "[0.0]",
+        "content" : "This emphasizes “hard” negatives."
+      } ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 522.945, 538.576, 549.077 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Batch negative strategy: use other examples in the mini-batch as negatives to avoid extra sampling overhead.",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "paragraph",
+    "id" : 53,
+    "page number" : 2,
+    "bounding box" : [ 71.637, 499.184, 338.429, 515.144 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "Always normalize wi,k so k wi,k = 1 for numerical stability."
+  }, {
+    "type" : "heading",
+    "id" : 54,
+    "level" : "Doctitle",
+    "page number" : 2,
+    "bounding box" : [ 56.693, 466.312, 274.951, 487.267 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Adaptive mixture coeﬀicient αi"
+  }, {
+    "type" : "paragraph",
+    "id" : 55,
+    "page number" : 2,
+    "bounding box" : [ 56.693, 434.28, 538.582, 460.352 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "To adapt the relative importance of the supervised vs contrastive terms, define αi per sample. One robust choice:"
+  }, {
+    "type" : "paragraph",
+    "id" : 57,
+    "page number" : 2,
+    "bounding box" : [ 287.103, 407.181, 337.174, 424.466 ],
+    "font" : "CMMI10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "ℓ(xi,yi) − τ"
+  }, {
+    "type" : "paragraph",
+    "id" : 59,
+    "page number" : 2,
+    "bounding box" : [ 71.637, 377.225, 538.582, 421.233 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "β′ , (3) where ℓ(x,y) is a sample-level signal (e.g. token length |y|, or a diﬀiculty score such as negative log-likelihood"
+  }, {
+    "type" : "paragraph",
+    "id" : 56,
+    "page number" : 2,
+    "bounding box" : [ 247.06, 406.768, 281.257, 417.477 ],
+    "font" : "CMMI10",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "αi = σ"
+  }, {
+    "type" : "paragraph",
+    "id" : 60,
+    "page number" : 2,
+    "bounding box" : [ 56.693, 371.817, 538.578, 386.061 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "under reference policy), τ a threshold, and β′ a temperature controlling smoothness. Practical recommendations:"
+  }, {
+    "type" : "list",
+    "id" : 61,
+    "level" : "1",
+    "page number" : 2,
+    "bounding box" : [ 68.867, 292.243, 538.584, 366.136 ],
+    "numbering style" : "unordered",
+    "number of list items" : 4,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 345.344, 425.739, 366.136 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• If ℓ = |y| (sequence length), tune τ on a validation set (512 is task dependent).",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 332.094, 499.112, 346.211 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Consider alternate signals: model confidence, reference log-prob, or validation loss per example.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 305.494, 306.526, 326.286 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Optionally clip αi ∈ [αmin,αmax] to avoid extremes.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 292.243, 538.584, 306.36 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• You can also schedule α over training steps (e.g. slowly move from supervised-heavy to contrastive-heavy).",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "heading",
+    "id" : 62,
+    "level" : "Doctitle",
+    "page number" : 2,
+    "bounding box" : [ 56.693, 258.025, 385.537, 278.483 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Hyperparameter defaults & practical guidance"
+  }, {
+    "type" : "list",
+    "id" : 63,
+    "level" : "1",
+    "page number" : 2,
+    "bounding box" : [ 68.867, 113.914, 538.584, 251.568 ],
+    "numbering style" : "unordered",
+    "number of list items" : 6,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 237.451, 312.148, 251.568 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• ϵ (PPO clip): common values 0.1–0.2; start with 0.1.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 217.525, 389.343, 231.642 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• K (negatives per context): 4 16; prefer batch negatives when K large.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 197.252, 488.27, 211.717 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• γ (weight for LCPO): start with 0.1 0.5; tune to balance supervised vs contrastive objectives.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 165.72, 538.583, 191.792 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• βKL: if used, adaptively adjust as in PPO-penalty variants: if observed KL >target, increase βKL; otherwise decrease.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 133.839, 538.584, 159.911 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Optimizer: Adam / AdamW with learning rate tuned separately for policy and for any encoder used by contrastive loss.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 2,
+      "bounding box" : [ 68.867, 113.914, 463.386, 128.031 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Advantage estimation: use GAE (generalized advantage estimation) to reduce variance.",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "footer",
+    "id" : 64,
+    "page number" : 2,
+    "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+    "kids" : [ {
+      "type" : "heading",
+      "id" : 5,
+      "page number" : 2,
+      "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+      "heading level" : 3,
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "2"
+    } ]
+  }, {
+    "type" : "heading",
+    "id" : 65,
+    "level" : "Doctitle",
+    "page number" : 3,
+    "bounding box" : [ 56.693, 756.864, 412.981, 777.322 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Stability considerations and implementation tricks"
+  }, {
+    "type" : "list",
+    "id" : 66,
+    "level" : "1",
+    "page number" : 3,
+    "bounding box" : [ 68.867, 608.42, 538.581, 750.467 ],
+    "numbering style" : "unordered",
+    "number of list items" : 5,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 712.38, 538.581, 750.467 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Gradient conflicts: supervised and contrastive gradient directions can conflict. Consider alternating updates (one step supervised PPO-clip, one step contrastive) or use gradient surgery techniques if conflicts are severe.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 680.499, 538.573, 706.631 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Clipping and zero gradients: when ratios are clipped, gradient contributions from those samples are limited. Monitor fraction of clipped updates; if too high, reduce learning rate or increase ϵ.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 660.524, 523.471, 674.751 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Value normalization: normalize advantages (zero mean, unit variance) per batch to stabilize scale.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 640.599, 517.763, 654.826 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Use mini-batch vectorization: compute ratios and clip operations in a vectorized way for speed.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 608.42, 538.579, 634.9 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Monitoring: track (1) average KL, (2) fraction clipped, (3) contrastive loss magnitude, (4) supervised PPO loss magnitude. Keep their scales comparable by tuning γ and βKL.",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "heading",
+    "id" : 67,
+    "level" : "Doctitle",
+    "page number" : 3,
+    "bounding box" : [ 56.693, 574.55, 201.676, 595.008 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Pseudocode (sketch)"
+  }, {
+    "type" : "paragraph",
+    "id" : 69,
+    "page number" : 3,
+    "bounding box" : [ 56.693, 519.65, 373.922, 554.29 ],
+    "font" : "LMRoman10-Regular",
+    "font size" : 9.963,
+    "text color" : "[0.0]",
+    "content" : "Algorithm 1 HACPO Training Step (sketch) Require: dataset D, contrastive generator A, batch size B, negatives K"
+  }, {
+    "type" : "list",
+    "id" : 71,
+    "level" : "2",
+    "page number" : 3,
+    "bounding box" : [ 57.833, 366.697, 436.746, 528.547 ],
+    "numbering style" : "arabic numbers",
+    "number of list items" : 13,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 514.32, 203.513, 528.547 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "1: for each training iteration do",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 495.74, 238.145, 516.532 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "2: Sample batch {(xi,yi)}Bi=1 from D",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 483.785, 383.309, 504.577 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "3: For each i, sample negatives {yi,k}Kk=1 ∼ A (or use batch negatives)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 477.863, 325.302, 492.621 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "4: Compute reference probabilities / log-probs under πref",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 462.981, 327.848, 478.729 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "5: Compute current log-probs under πθ and ratios ri, ri(k)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 448.802, 350.58, 464.55 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "6: Compute advantages Aˆi, and (optionally) Aˆ(ik) for negatives",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 438.13, 189.75, 452.595 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "7: Compute αi per Eq.(3)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 426.523, 436.746, 440.64 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "8: Compute supervised PPO-clip term and contrastive PPO-clip term (vectorized)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 62.065, 414.22, 204.506, 428.685 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "9: Compute LCPO per Eq.(2)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 57.833, 395.938, 233.892, 416.73 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "10: J ← average objective per Eq.(1)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 57.833, 383.983, 315.733, 404.775 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "11: Take gradient step to maximize J (or minimize −J)",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 57.833, 378.354, 311.875, 392.819 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "12: Update βKL adaptively if using KL-penalty scheme",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 57.833, 366.697, 108.877, 380.924 ],
+      "font" : "LMRoman8-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "13: end for",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "heading",
+    "id" : 73,
+    "level" : "Doctitle",
+    "page number" : 3,
+    "bounding box" : [ 56.693, 319.624, 376.011, 340.082 ],
+    "heading level" : 1,
+    "font" : "LMRoman12-Bold",
+    "font size" : 14.346,
+    "text color" : "[0.0]",
+    "content" : "Summary of improvements over original spec"
+  }, {
+    "type" : "list",
+    "id" : 74,
+    "level" : "1",
+    "page number" : 3,
+    "bounding box" : [ 68.867, 219.348, 410.803, 313.167 ],
+    "numbering style" : "unordered",
+    "number of list items" : 5,
+    "list items" : [ {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 299.05, 353.289, 313.167 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Unified notation for ratios and advantages to avoid ambiguity.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 279.124, 323.551, 293.241 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Explicit clip interval and PPO-style clipping semantics.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 259.199, 410.803, 273.316 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Concrete contrastive loss (InfoNCE-style) option and weight normalization.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 239.274, 405.503, 253.391 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Practical hyperparameter defaults and stability/implementation guidance.",
+      "kids" : [ ]
+    }, {
+      "type" : "list item",
+      "page number" : 3,
+      "bounding box" : [ 68.867, 219.348, 363.65, 233.465 ],
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "• Pseudocode to reduce misinterpretation at implementation time.",
+      "kids" : [ ]
+    } ]
+  }, {
+    "type" : "footer",
+    "id" : 75,
+    "page number" : 3,
+    "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+    "kids" : [ {
+      "type" : "heading",
+      "id" : 6,
+      "page number" : 3,
+      "bounding box" : [ 295.147, 38.089, 300.128, 52.206 ],
+      "heading level" : 3,
+      "font" : "LMRoman10-Regular",
+      "font size" : 9.963,
+      "text color" : "[0.0]",
+      "content" : "3"
+    } ]
+  } ]
+}

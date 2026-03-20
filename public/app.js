@@ -17,6 +17,7 @@ const EMBEDDING_OPTIONS = new Set([
   "text-embedding-3-large",
 ]);
 const HF_ENDPOINT_OPTIONS = new Set(["", "https://huggingface.co", "https://hf-mirror.com"]);
+const OCR_BACKEND_OPTIONS = new Set(["", "tesseract", "guten-ocr"]);
 
 function getSessionId() {
   if (getSessionId._mem) return getSessionId._mem;
@@ -93,6 +94,13 @@ function loadCfg() {
     local.embeddingModel = normalizedEmbeddingModel;
     const rawHfEndpoint = String(local.hfEndpoint || "").trim();
     local.hfEndpoint = HF_ENDPOINT_OPTIONS.has(rawHfEndpoint) ? rawHfEndpoint : "";
+    const rawOcrBackend = String(local.ocrBackend || "").trim().toLowerCase();
+    local.ocrBackend = OCR_BACKEND_OPTIONS.has(rawOcrBackend) ? rawOcrBackend : "";
+    local.ocrLanguage = String(local.ocrLanguage || "").trim();
+    if (typeof local.ocrAutoDownload !== "boolean") {
+      const raw = String(local.ocrAutoDownload ?? "").trim().toLowerCase();
+      local.ocrAutoDownload = raw ? !(raw === "0" || raw === "false" || raw === "off" || raw === "no") : false;
+    }
     if (typeof local.memoryEnabled !== "boolean") {
       const raw = String(local.memoryEnabled ?? "").trim().toLowerCase();
       local.memoryEnabled = !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
@@ -210,6 +218,9 @@ function cfgFromInputs() {
     model: document.getElementById("model").value.trim(),
     embeddingModel: document.getElementById("embeddingModel").value.trim(),
     hfEndpoint: document.getElementById("hfEndpoint").value.trim(),
+    ocrBackend: document.getElementById("ocrBackend")?.value?.trim() || "",
+    ocrLanguage: document.getElementById("ocrLanguage")?.value?.trim() || "",
+    ocrAutoDownload: Boolean(document.getElementById("ocrAutoDownload")?.checked),
     memoryEnabled: Boolean(document.getElementById("memoryEnabled")?.checked),
     defaultHeaders: customHeadersFromTable(),
     systemContent: document.getElementById("systemContent").value.trim(),
@@ -222,6 +233,9 @@ function fillInputs(cfg) {
   document.getElementById("model").value = cfg.model || "";
   document.getElementById("embeddingModel").value = cfg.embeddingModel || "";
   document.getElementById("hfEndpoint").value = cfg.hfEndpoint || "";
+  if (document.getElementById("ocrBackend")) document.getElementById("ocrBackend").value = cfg.ocrBackend || "";
+  if (document.getElementById("ocrLanguage")) document.getElementById("ocrLanguage").value = cfg.ocrLanguage || "";
+  if (document.getElementById("ocrAutoDownload")) document.getElementById("ocrAutoDownload").checked = Boolean(cfg.ocrAutoDownload);
   if (document.getElementById("memoryEnabled")) document.getElementById("memoryEnabled").checked = cfg.memoryEnabled !== false;
   fillCustomHeadersTable(cfg.defaultHeaders);
   document.getElementById("systemContent").value = cfg.systemContent || "";
@@ -713,6 +727,10 @@ async function sendChat() {
       if (chatSummary) form.append("summary", String(chatSummary || ""));
       const cfg = loadCfg();
       form.append("memory_enabled", cfg.memoryEnabled === false ? "0" : "1");
+      if (cfg.ocrBackend) form.append("ocr_backend", String(cfg.ocrBackend || ""));
+      if (cfg.ocrLanguage) form.append("ocr_language", String(cfg.ocrLanguage || ""));
+      if (cfg.hfEndpoint) form.append("hf_endpoint", String(cfg.hfEndpoint || ""));
+      form.append("ocr_auto_download", cfg.ocrAutoDownload ? "1" : "0");
       if (cfg.systemContent) form.append("systemContent", String(cfg.systemContent || ""));
       data = await apiRunStream({ method: "POST", url: "/run", body: form, cfg, onStage: setProgress });
     } else {
@@ -726,6 +744,10 @@ async function sendChat() {
           messages: nextCtxMessages,
           summary: chatSummary,
           memory: { enabled: cfg.memoryEnabled !== false },
+          ...(cfg.ocrBackend ? { ocr_backend: String(cfg.ocrBackend || "") } : {}),
+          ...(cfg.ocrLanguage ? { ocr_language: String(cfg.ocrLanguage || "") } : {}),
+          ...(typeof cfg.ocrAutoDownload === "boolean" ? { ocr_auto_download: Boolean(cfg.ocrAutoDownload) } : {}),
+          ...(cfg.hfEndpoint ? { hf_endpoint: String(cfg.hfEndpoint || "") } : {}),
           ...(cfg.systemContent ? { systemContent: String(cfg.systemContent || "") } : {}),
         },
         cfg,
@@ -885,6 +907,11 @@ async function doExtract() {
   try {
     const form = new FormData();
     for (const f of files) form.append("file", f, f.name);
+    const cfg = loadCfg();
+    if (cfg.ocrBackend) form.append("ocr_backend", String(cfg.ocrBackend || ""));
+    if (cfg.ocrLanguage) form.append("ocr_language", String(cfg.ocrLanguage || ""));
+    if (cfg.hfEndpoint) form.append("hf_endpoint", String(cfg.hfEndpoint || ""));
+    form.append("ocr_auto_download", cfg.ocrAutoDownload ? "1" : "0");
     const url = resolveApiUrl("/documents/extract");
     let resp;
     try {
@@ -915,6 +942,7 @@ async function doExtract() {
 }
 
 let embeddingsPollTimer = null;
+let ocrPollTimer = null;
 
 function renderEmbeddingsStatus(data) {
   const hint = document.getElementById("embeddingsHint");
@@ -1027,6 +1055,132 @@ async function refreshEmbeddingsStatus() {
   }
 }
 
+function renderOcrStatus(data) {
+  const hint = document.getElementById("ocrHint");
+  const list = document.getElementById("ocrList");
+  if (!hint || !list) return;
+  const tesseractOk = Boolean(data?.backends?.tesseract?.available);
+  const guten = data?.backends?.["guten-ocr"] || null;
+  const gutenStatus = String(guten?.status || "not_downloaded");
+  const autoDefault = Boolean(data?.auto_download_default);
+  hint.textContent = `tesseract: ${tesseractOk ? "可用" : "不可用"} · guten-ocr: ${gutenStatus} · 自动下载默认: ${autoDefault ? "开" : "关"}`;
+  hint.title = "";
+  list.textContent = "";
+  const items = [
+    { key: "tesseract", status: tesseractOk ? "available" : "missing", error: "" },
+    {
+      key: "guten-ocr",
+      status: gutenStatus,
+      error: guten?.error ? String(guten.error) : "",
+      logTail: guten?.log_tail ? String(guten.log_tail) : "",
+      registered: Boolean(guten?.registered),
+      available: Boolean(guten?.available),
+    },
+  ];
+  for (const it of items) {
+    const row = document.createElement("div");
+    row.className = "memNode";
+    const left = document.createElement("div");
+    left.className = "memPath";
+    if (it.key === "tesseract") {
+      left.textContent = "tesseract (system)";
+    } else {
+      const extra = [];
+      extra.push(it.available ? "available" : "missing");
+      extra.push(it.registered ? "registered" : "unregistered");
+      left.textContent = `guten-ocr (${extra.join(", ")})`;
+    }
+    const actions = document.createElement("div");
+    actions.className = "memActions";
+    const pill = document.createElement("span");
+    pill.className = "pill";
+    if (it.key === "tesseract") {
+      pill.classList.add(it.status === "available" ? "ok" : "err");
+      pill.textContent = it.status === "available" ? "可用" : "不可用";
+    } else {
+      if (it.status === "downloaded") pill.classList.add("ok");
+      else if (it.status === "downloading") pill.classList.add("warn");
+      else if (it.status === "error") pill.classList.add("err");
+      else pill.classList.add("muted");
+      pill.textContent =
+        it.status === "downloaded"
+          ? "已下载"
+          : it.status === "downloading"
+            ? "下载中…"
+            : it.status === "error"
+              ? "失败"
+              : "未下载";
+      const tips = [];
+      if (it.error) tips.push(it.error);
+      if (it.logTail) tips.push(it.logTail);
+      if (tips.length) pill.title = tips.join("\n\n");
+    }
+    actions.appendChild(pill);
+    if (it.key === "guten-ocr") {
+      const btn = document.createElement("button");
+      btn.className = "memBtn secondary";
+      btn.textContent = it.status === "downloaded" ? "重新下载" : "下载";
+      btn.disabled = it.status === "downloading";
+      btn.onclick = () => void triggerOcrDownload(it.status === "downloaded");
+      actions.appendChild(btn);
+    }
+    row.appendChild(left);
+    row.appendChild(actions);
+    list.appendChild(row);
+  }
+}
+
+async function refreshOcrStatus() {
+  const hint = document.getElementById("ocrHint");
+  const list = document.getElementById("ocrList");
+  if (!hint || !list) return;
+  hint.textContent = "Loading...";
+  try {
+    const cfg = loadCfg();
+    const data = await apiJson("GET", "/ocr/status", null, cfg);
+    renderOcrStatus(data);
+    const guten = data?.backends?.["guten-ocr"] || null;
+    const status = String(guten?.status || "not_downloaded");
+    if (status !== "downloading" && ocrPollTimer) {
+      clearInterval(ocrPollTimer);
+      ocrPollTimer = null;
+    }
+  } catch (e) {
+    hint.textContent = `加载失败：${e.message || e}`;
+    list.textContent = "";
+    if (ocrPollTimer) {
+      clearInterval(ocrPollTimer);
+      ocrPollTimer = null;
+    }
+  }
+}
+
+async function triggerOcrDownload(force = false) {
+  const hint = document.getElementById("ocrHint");
+  if (!hint) return;
+  try {
+    const cfg = loadCfg();
+    const language = String(document.getElementById("ocrLanguage")?.value || cfg.ocrLanguage || "").trim() || "eng";
+    const hfEndpoint = String(document.getElementById("hfEndpoint")?.value || cfg.hfEndpoint || "").trim();
+    const data = await apiJson(
+      "POST",
+      "/ocr/download",
+      { backend: "guten-ocr", language, ...(force ? { force: true } : {}), ...(hfEndpoint ? { hf_endpoint: hfEndpoint } : {}) },
+      cfg,
+    );
+    const status = String((data?.job?.status || data?.status) ?? "unknown");
+    if (status === "downloading") {
+      hint.textContent = `已触发下载：guten-ocr (${language})`;
+      if (!ocrPollTimer) ocrPollTimer = setInterval(() => void refreshOcrStatus(), 1500);
+    } else {
+      hint.textContent = `状态：${status}`;
+    }
+    await refreshOcrStatus();
+  } catch (e) {
+    hint.textContent = `触发失败：${e.message || e}`;
+  }
+}
+
 async function triggerEmbeddingDownload(preset, force = false) {
   const hint = document.getElementById("embeddingsHint");
   if (!hint) return;
@@ -1103,6 +1257,8 @@ document.getElementById("btnChoose").addEventListener("click", doChoose);
   document.getElementById("btnExtract").addEventListener("click", doExtract);
   document.getElementById("refreshMemories").addEventListener("click", () => fetchMemories());
   document.getElementById("refreshEmbeddings").addEventListener("click", () => void refreshEmbeddingsStatus());
+  if (document.getElementById("refreshOcr")) document.getElementById("refreshOcr").addEventListener("click", () => void refreshOcrStatus());
+  if (document.getElementById("downloadOcr")) document.getElementById("downloadOcr").addEventListener("click", () => void triggerOcrDownload(false));
 
   document.getElementById("menuBtn").addEventListener("click", openDrawer);
 document.getElementById("drawerClose").addEventListener("click", closeDrawer);
@@ -1129,3 +1285,4 @@ newChat();
   reloadSkills();
   fetchMemories();
   refreshEmbeddingsStatus();
+  refreshOcrStatus();
