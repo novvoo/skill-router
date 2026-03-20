@@ -127,11 +127,14 @@ async function main() {
     fd.append("query", "这个文档有提供测试地址吗？");
     fd.append("mime_type", "text/plain");
     fd.append("file", new Blob(["测试地址：https://test.example.com\n正式地址：https://www.example.com\n"], { type: "text/plain" }), "doc.txt");
+    fd.append("file", new Blob(["预发地址：https://staging.example.com\n"], { type: "text/plain" }), "doc2.txt");
     const runResp = await fetch(`${base}/run`, { method: "POST", body: fd });
     expectOk(runResp.ok, `POST /run (multipart) failed: ${runResp.status}`);
     const runJson: any = await runResp.json();
     const content = String(runJson?.response || "");
     expectOk(content.includes("test.example.com"), "run response missing extracted test url");
+    expectOk(content.includes("staging.example.com"), "run response missing extracted staging url");
+    expectOk(Array.isArray(runJson?.documents) && runJson.documents.length === 2, "run documents should include 2 items");
 
     const run2Resp = await fetch(`${base}/run`, {
       method: "POST",
@@ -149,6 +152,14 @@ async function main() {
     expectOk(run2?.models?.chat === "smoke", "run models.chat should be set");
     expectOk(run2?.models?.embedding?.provider === "openai_compatible", "run models.embedding provider mismatch");
     expectOk(String(run2?.models?.embedding?.model || "").includes("text-embedding-3-small"), "run models.embedding model mismatch");
+
+    const fd2 = new FormData();
+    fd2.append("file", new Blob(["hello"], { type: "text/plain" }), "a.txt");
+    fd2.append("file", new Blob(["world"], { type: "text/plain" }), "b.txt");
+    const docResp = await fetch(`${base}/documents/extract`, { method: "POST", body: fd2 });
+    expectOk(docResp.ok, `POST /documents/extract (multipart) failed: ${docResp.status}`);
+    const docJson: any = await docResp.json();
+    expectOk(Array.isArray(docJson?.results) && docJson.results.length === 2, "documents/extract results should include 2 items");
   } finally {
     await new Promise<void>((resolve) => server.close(() => resolve()));
     await new Promise<void>((resolve) => setTimeout(resolve, 50));

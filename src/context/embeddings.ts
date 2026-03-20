@@ -5,6 +5,7 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 
 const VALID_PRESETS = new Set(["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"]);
 const DEFAULT_OPENAI_EMBEDDING_MODEL = "text-embedding-3-small";
+const DEFAULT_HF_ENDPOINT = "https://huggingface.co";
 
 let lastEmbeddingDim = 384;
 let hfCacheRepaired = false;
@@ -115,8 +116,17 @@ async function prefetchPresetModelFiles(args: { preset: string; hfEndpoint: stri
   }
 
   const required = ["config.json", "tokenizer.json"] as const;
-  const optional = ["tokenizer_config.json", "special_tokens_map.json", "vocab.txt"] as const;
-  const onnxCandidates = ["onnx/model.onnx", "onnx/model_quantized.onnx"] as const;
+  const optional = [
+    "tokenizer_config.json",
+    "special_tokens_map.json",
+    "vocab.txt",
+    "vocab.json",
+    "merges.txt",
+    "tokenizer.model",
+    "added_tokens.json",
+    "preprocessor_config.json",
+  ] as const;
+  const onnxCandidates = ["onnx/model_quantized.onnx", "onnx/model.onnx"] as const;
 
   const downloadRel = async (rel: string, required: boolean) => {
     const dst0 = path.join(repoDir, rel);
@@ -133,7 +143,25 @@ async function prefetchPresetModelFiles(args: { preset: string; hfEndpoint: stri
 
   for (const rel of required) await downloadRel(rel, true);
   for (const rel of optional) await downloadRel(rel, false);
-  for (const rel of onnxCandidates) await downloadRel(rel, false);
+  if (
+    !existsSync(path.join(repoDir, "onnx", "model_quantized.onnx")) &&
+    !existsSync(path.join(repoDir, "onnx", "model.onnx")) &&
+    !existsSync(path.join(snapshotDir, "onnx", "model_quantized.onnx")) &&
+    !existsSync(path.join(snapshotDir, "onnx", "model.onnx"))
+  ) {
+    let downloadedOnnx = false;
+    let lastErr: unknown = null;
+    for (const rel of onnxCandidates) {
+      try {
+        await downloadRel(rel, true);
+        downloadedOnnx = true;
+        break;
+      } catch (e) {
+        lastErr = e;
+      }
+    }
+    if (!downloadedOnnx) throw lastErr || new Error("onnx model download failed");
+  }
   return true;
 }
 
@@ -359,7 +387,9 @@ async function kreuzbergEmbedOnce(
   const timeoutMs = readEnvInt("KREUZBERG_EMBED_TIMEOUT_MS", 120_000);
   const buffer = Buffer.from(text, "utf-8");
   const uint8Array = new Uint8Array(buffer);
+  const prevHfEndpoint = process.env.HF_ENDPOINT;
   if (hfEndpoint) process.env.HF_ENDPOINT = hfEndpoint;
+  else delete process.env.HF_ENDPOINT;
   const result = await withTimeout(
     extractBytes(uint8Array, "text/plain", {
       embeddings: true,
@@ -375,7 +405,10 @@ async function kreuzbergEmbedOnce(
     } as any),
     timeoutMs,
     `kreuzbergEmbedOnce(${preset})`,
-  );
+  ).finally(() => {
+    if (prevHfEndpoint) process.env.HF_ENDPOINT = prevHfEndpoint;
+    else delete process.env.HF_ENDPOINT;
+  });
   const warnings = getProcessingWarnings(result);
   if (warnings.length) recordEmbeddingWarnings({ provider: "kreuzberg", preset, warnings });
   const embedding = extractEmbeddingFromKreuzbergResult(result);
@@ -396,19 +429,32 @@ async function ensureKreuzbergReady(preset: string, cacheDir: string, hubCache: 
       if (hasContentRangeMissingWarning(warnings)) {
         cleanupPartialFiles(cacheDir);
         cleanupPartialFiles(hubCache);
-        if (hfEndpoint) {
+        const endpointForPrefetch = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || DEFAULT_HF_ENDPOINT;
+        try {
+          await prefetchPresetModelFiles({ preset, hfEndpoint: endpointForPrefetch, hubCacheDir: cacheDir });
+          await prefetchPresetModelFiles({ preset, hfEndpoint: endpointForPrefetch, hubCacheDir: hubCache });
+        } catch {
+        }
+        try {
+          repairHfHubCache(hubCache);
+        } catch {
+        }
+        ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint));
+        if (embedding) return;
+
+        if (hasContentRangeMissingWarning(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
           try {
-            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: cacheDir });
-            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: hubCache });
+            await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: cacheDir });
+            await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: hubCache });
           } catch {
           }
           try {
             repairHfHubCache(hubCache);
           } catch {
           }
+          ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, DEFAULT_HF_ENDPOINT));
+          if (embedding) return;
         }
-        ({ embedding, warnings } = await kreuzbergEmbedOnce(warmupText, preset, cacheDir, hfEndpoint));
-        if (embedding) return;
       }
     } catch {
     }
@@ -483,6 +529,7 @@ async function createOpenAIEmbeddings(config: OpenAIConfig, model: string, input
 
 export async function createEmbeddings(config: OpenAIConfig, input: string | string[]): Promise<number[][]> {
   const inputs = Array.isArray(input) ? input : [input];
+  const hasAnyNonEmptyInput = inputs.some((t) => Boolean(String(t || "").trim()));
 
   const rawModel = String(config.embeddingModel || "").trim();
   const parsedPreset = parseKreuzbergPreset(rawModel);
@@ -492,7 +539,6 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
     lastEmbeddingDim = getDimension(preset);
   }
   const hfEndpoint = normalizeHfEndpoint((config as any).hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT);
-  if (hfEndpoint) process.env.HF_ENDPOINT = hfEndpoint;
 
   const cacheDir = resolveKreuzbergCacheDir();
   const base = cacheDir.toLowerCase().endsWith(`${path.sep}models`) ? path.dirname(cacheDir) : cacheDir;
@@ -550,9 +596,11 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
     }
   }
 
-  try {
-    await ensureKreuzbergReady(preset, cacheDir, hubCache, hfEndpoint);
-  } catch {
+  if (hasAnyNonEmptyInput) {
+    try {
+      await ensureKreuzbergReady(preset, cacheDir, hubCache, hfEndpoint);
+    } catch {
+    }
   }
 
   const results: number[][] = [];
@@ -573,29 +621,62 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
       if (hasContentRangeMissingWarning(warnings)) {
         cleanupPartialFiles(cacheDir);
         cleanupPartialFiles(hubCache);
-        if (hfEndpoint) {
-          try {
-            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: cacheDir });
-            await prefetchPresetModelFiles({ preset, hfEndpoint, hubCacheDir: hubCache });
-          } catch {
-          }
-          try {
-            repairHfHubCache(hubCache);
-          } catch {
-          }
+        const endpointForPrefetch = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || DEFAULT_HF_ENDPOINT;
+        try {
+          await prefetchPresetModelFiles({ preset, hfEndpoint: endpointForPrefetch, hubCacheDir: cacheDir });
+          await prefetchPresetModelFiles({ preset, hfEndpoint: endpointForPrefetch, hubCacheDir: hubCache });
+        } catch {
+        }
+        try {
+          repairHfHubCache(hubCache);
+        } catch {
         }
         ({ embedding, warnings } = await kreuzbergEmbedOnce(text, preset, cacheDir, hfEndpoint));
         if (embedding) {
           results.push(embedding);
           continue;
         }
+
+        if (hasContentRangeMissingWarning(warnings) && endpointForPrefetch !== DEFAULT_HF_ENDPOINT) {
+          try {
+            await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: cacheDir });
+            await prefetchPresetModelFiles({ preset, hfEndpoint: DEFAULT_HF_ENDPOINT, hubCacheDir: hubCache });
+          } catch {
+          }
+          try {
+            repairHfHubCache(hubCache);
+          } catch {
+          }
+          ({ embedding, warnings } = await kreuzbergEmbedOnce(text, preset, cacheDir, DEFAULT_HF_ENDPOINT));
+          if (embedding) {
+            results.push(embedding);
+            continue;
+          }
+        }
       }
 
-      console.warn(`Kreuzberg returned no embedding for input. Preset: ${preset}, Text length: ${text.length}`);
+      const effectiveHfEndpoint = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+      console.warn("Kreuzberg returned no embedding for input.", {
+        preset,
+        text_length: text.length,
+        dimensions: dim,
+        hf_endpoint: effectiveHfEndpoint,
+        cache_dir: cacheDir,
+        hub_cache_dir: hubCache,
+      });
       if (warnings.length) console.warn("Processing warnings:", warnings);
       results.push(zeroVector(dim));
     } catch (e: any) {
-      console.error("Kreuzberg embedding failed:", e);
+      const effectiveHfEndpoint = hfEndpoint || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
+      console.error("Kreuzberg embedding failed:", {
+        preset,
+        text_length: text.length,
+        dimensions: dim,
+        hf_endpoint: effectiveHfEndpoint,
+        cache_dir: cacheDir,
+        hub_cache_dir: hubCache,
+        error: e?.stack || e?.message || String(e),
+      });
       results.push(zeroVector(dim));
     }
   }

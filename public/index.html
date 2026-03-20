@@ -8,30 +8,39 @@
     <style>
       :root {
         color-scheme: dark;
-        --mui-font: Roboto, system-ui, -apple-system, Segoe UI, Helvetica, Arial;
+        --mui-font: Roboto, system-ui, -apple-system, Segoe UI, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
         --mui-bg: #121212;
         --mui-paper: #1e1e1e;
+        --mui-paper-2: #242424;
         --mui-divider: rgba(255, 255, 255, 0.12);
+        --mui-outline: rgba(255, 255, 255, 0.23);
         --mui-text: rgba(255, 255, 255, 0.87);
         --mui-text-2: rgba(255, 255, 255, 0.7);
-        --mui-text-3: rgba(255, 255, 255, 0.6);
+        --mui-text-3: rgba(255, 255, 255, 0.5);
         --mui-primary: #1976d2;
         --mui-primary-2: #1565c0;
-        --mui-error: #f44336;
+        --mui-primary-contrast: #ffffff;
+        --mui-action-hover: rgba(255, 255, 255, 0.08);
+        --mui-action-focus: rgba(255, 255, 255, 0.12);
+        --mui-field-bg: rgba(255, 255, 255, 0.06);
+        --mui-field-bg-hover: rgba(255, 255, 255, 0.08);
+        --mui-error: #d32f2f;
         --mui-success: #2e7d32;
-        --mui-radius: 12px;
-        --mui-radius-2: 16px;
+        --mui-radius: 8px;
+        --mui-radius-2: 12px;
         --mui-shadow-1: 0px 2px 1px -1px rgba(0,0,0,0.2), 0px 1px 1px 0px rgba(0,0,0,0.14), 0px 1px 3px 0px rgba(0,0,0,0.12);
         --mui-shadow-2: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
+        --mui-shadow-3: 0px 3px 3px -2px rgba(0,0,0,0.2), 0px 3px 4px 0px rgba(0,0,0,0.14), 0px 1px 8px 0px rgba(0,0,0,0.12);
       }
+
+      * { box-sizing: border-box; }
 
       body {
         font-family: var(--mui-font);
+        font-size: 14px;
+        line-height: 1.5;
         margin: 0;
-        background:
-          radial-gradient(1200px 700px at 22% -10%, rgba(25, 118, 210, 0.14), transparent 60%),
-          radial-gradient(900px 520px at 90% 8%, rgba(46, 125, 50, 0.10), transparent 55%),
-          var(--mui-bg);
+        background: var(--mui-bg);
         color: var(--mui-text);
       }
       .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 18px 44px; }
@@ -42,24 +51,29 @@
       .card:hover { box-shadow: var(--mui-shadow-2); }
       .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--mui-text); letter-spacing: 0.12px; }
       label { display: block; font-size: 12px; color: var(--mui-text-2); margin-bottom: 6px; }
-      input, textarea, select {
+      input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select {
         width: 100%;
-        box-sizing: border-box;
-        background: rgba(0, 0, 0, 0.18);
+        background: var(--mui-field-bg);
         color: var(--mui-text);
-        border: 1px solid rgba(255, 255, 255, 0.23);
-        border-radius: 10px;
-        padding: 10px 12px;
+        border: 1px solid var(--mui-outline);
+        border-radius: 6px;
+        padding: 10px 14px;
         outline: none;
         transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
       }
-      select { background: rgba(0, 0, 0, 0.32); border-color: rgba(255, 255, 255, 0.18); }
-      select:hover { background: rgba(0, 0, 0, 0.36); }
-      select:focus { background: rgba(0, 0, 0, 0.40); }
+      input[type="checkbox"], input[type="radio"] {
+        width: 16px;
+        height: 16px;
+        accent-color: var(--mui-primary);
+      }
+      select { background: var(--mui-field-bg); }
+      select:hover { background: var(--mui-field-bg-hover); }
+      select:focus { background: var(--mui-field-bg-hover); }
       select option { background: #141414; color: var(--mui-text); }
-      input::placeholder, textarea::placeholder { color: rgba(255, 255, 255, 0.45); }
-      input:hover, textarea:hover, select:hover { border-color: rgba(255, 255, 255, 0.4); }
-      input:focus, textarea:focus, select:focus { border-color: var(--mui-primary); box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
+      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], textarea)::placeholder { color: rgba(255, 255, 255, 0.45); }
+      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):hover { border-color: rgba(255, 255, 255, 0.38); }
+      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):focus { border-color: var(--mui-primary); box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.28); }
+      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):focus-visible { outline: 0; }
       textarea { min-height: 132px; resize: vertical; }
       input[type="file"] { padding: 8px 10px; }
       .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
@@ -68,34 +82,37 @@
       button {
         background: var(--mui-primary);
         border: 0;
-        color: #fff;
-        border-radius: 999px;
-        padding: 10px 14px;
+        color: var(--mui-primary-contrast);
+        border-radius: 8px;
+        padding: 8px 16px;
         cursor: pointer;
-        font-weight: 600;
-        letter-spacing: 0.2px;
-        box-shadow: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
-        transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease;
+        font-weight: 500;
+        letter-spacing: 0.35px;
+        min-height: 36px;
+        box-shadow: var(--mui-shadow-2);
+        transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease, border-color 120ms ease;
       }
-      button:hover { background: var(--mui-primary-2); box-shadow: 0px 5px 5px -3px rgba(0,0,0,0.2), 0px 8px 10px 1px rgba(0,0,0,0.14), 0px 3px 14px 2px rgba(0,0,0,0.12); }
+      button:hover { background: var(--mui-primary-2); box-shadow: var(--mui-shadow-3); }
       button:active { transform: translateY(0.5px); }
+      button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
       button.secondary {
         background: transparent;
         color: var(--mui-text);
-        border: 1px solid rgba(255, 255, 255, 0.23);
+        border: 1px solid var(--mui-outline);
         box-shadow: none;
       }
-      button.secondary:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.35); box-shadow: none; }
+      button.secondary:hover { background: var(--mui-action-hover); border-color: rgba(255, 255, 255, 0.35); box-shadow: none; }
+      button:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
       .hint { font-size: 12px; color: var(--mui-text-3); line-height: 1.4; }
       pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 12px; overflow: auto; margin: 12px 0 0; }
       .ok { color: #81c784; }
       .err { color: #e57373; }
       .vHidden { display: none !important; }
-      .hdrTable { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--mui-divider); border-radius: 12px; overflow: hidden; }
+      .hdrTable { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); overflow: hidden; }
       .hdrTable th, .hdrTable td { padding: 8px; border-bottom: 1px solid var(--mui-divider); vertical-align: top; }
       .hdrTable th { text-align: left; font-size: 12px; color: var(--mui-text-2); font-weight: 600; background: rgba(255, 255, 255, 0.03); }
       .hdrTable tr:last-child td { border-bottom: 0; }
-      .hdrTable input { padding: 9px 10px; border-radius: 10px; }
+      .hdrTable input { padding: 9px 10px; border-radius: 6px; }
       .hdrRmBtn { width: 34px; height: 34px; padding: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; }
       .hdrRmBtn.secondary { border-color: rgba(255, 255, 255, 0.18); }
       .skillsTable th, .skillsTable td { padding: 6px 8px; font-size: 11px; line-height: 1.25; }
@@ -113,7 +130,7 @@
         align-items: center;
         gap: 10px;
         padding: 12px 14px;
-        background: rgba(18, 18, 18, 0.62);
+        background: rgba(18, 18, 18, 0.72);
         backdrop-filter: blur(10px);
         border-bottom: 1px solid var(--mui-divider);
       }
@@ -127,13 +144,14 @@
         align-items: center;
         justify-content: center;
         background: transparent;
-        border: 1px solid rgba(255, 255, 255, 0.16);
+        border: 1px solid var(--mui-outline);
         color: var(--mui-text);
         cursor: pointer;
         box-shadow: none;
       }
-      .iconBtn:hover { background: rgba(255, 255, 255, 0.06); border-color: rgba(255, 255, 255, 0.28); }
+      .iconBtn:hover { background: var(--mui-action-hover); border-color: rgba(255, 255, 255, 0.28); }
       .iconBtn:active { transform: translateY(0.5px); }
+      .iconBtn:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
 
       .main { flex: 1; }
       .page { max-width: 1040px; margin: 0 auto; padding: 16px 18px 28px; }
@@ -145,7 +163,7 @@
         flex-direction: column;
         gap: 10px;
         padding: 14px;
-        background: rgba(255, 255, 255, 0.03);
+        background: var(--mui-paper);
         border: 1px solid var(--mui-divider);
         border-radius: var(--mui-radius-2);
         overflow: auto;
@@ -170,7 +188,7 @@
         padding: 10px 12px;
         border-radius: 14px;
         border: 1px solid var(--mui-divider);
-        background: rgba(255, 255, 255, 0.04);
+        background: rgba(255, 255, 255, 0.03);
         white-space: normal;
         word-break: break-word;
         line-height: 1.55;
@@ -191,8 +209,8 @@
       .bubble code {
         font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
         font-size: 12.5px;
-        background: rgba(0, 0, 0, 0.18);
-        border: 1px solid rgba(255, 255, 255, 0.08);
+        background: rgba(0, 0, 0, 0.22);
+        border: 1px solid rgba(255, 255, 255, 0.10);
         padding: 0 6px;
         border-radius: 8px;
       }
@@ -220,9 +238,9 @@
       .mdPreview {
         margin-top: 10px;
         padding: 10px 12px;
-        border-radius: 10px;
-        border: 1px solid rgba(255, 255, 255, 0.23);
-        background: rgba(255, 255, 255, 0.03);
+        border-radius: 8px;
+        border: 1px solid var(--mui-divider);
+        background: rgba(255, 255, 255, 0.02);
       }
       .msg.assistant .bubble {
         background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
@@ -234,7 +252,7 @@
       .metaLine { font-size: 12px; color: rgba(255, 255, 255, 0.50); }
       .msg.user .metaLine { text-align: right; }
 
-      .composer { padding: 14px; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius-2); background: rgba(30, 30, 30, 0.86); backdrop-filter: blur(8px); box-shadow: var(--mui-shadow-1); }
+      .composer { padding: 14px; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius-2); background: rgba(30, 30, 30, 0.92); backdrop-filter: blur(8px); box-shadow: var(--mui-shadow-1); }
       .composer textarea { min-height: 86px; }
       .attachRow { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 12px; }
       @media (min-width: 700px) { .attachRow { grid-template-columns: 1fr 1fr; } }
@@ -266,7 +284,7 @@
       .drawerHeader { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--mui-divider); }
       .drawerTitle { font-size: 14px; font-weight: 600; }
       .drawerBody { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
-      .section { background: rgba(255, 255, 255, 0.03); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 14px; }
+      .section { background: var(--mui-paper-2); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 14px; }
       .sectionTitle { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--mui-text); }
       .memTree { font-size: 12px; margin-top: 10px; border: 1px solid var(--mui-divider); border-radius: 8px; overflow: hidden; }
       .memNode { padding: 6px 8px; border-bottom: 1px solid var(--mui-divider); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
@@ -304,8 +322,8 @@
               <div id="chatPreview" class="mdPreview vHidden" aria-label="preview" aria-hidden="true"></div>
               <div class="attachRow">
                 <div>
-                  <label>文档（可选）</label>
-                  <input id="chatDocFile" type="file" />
+                  <label>文档（可选，可多选）</label>
+                  <input id="chatDocFile" type="file" multiple />
                 </div>
               </div>
               <div class="btns">
@@ -410,6 +428,12 @@
           <div class="btns">
             <button id="refreshMemories" class="secondary">刷新列表</button>
           </div>
+          <div style="margin-top: 8px;">
+            <label style="display: inline-flex; gap: 8px; align-items: center;">
+              <input id="memoryEnabled" type="checkbox" checked />
+              <span>启用上下文/记忆检索（可能触发 embedding）</span>
+            </label>
+          </div>
           <div id="memoryTree" class="memTree"></div>
         </div>
 
@@ -444,8 +468,8 @@
           <div class="sectionTitle">文档提取（/documents/extract）</div>
           <div class="row">
             <div>
-              <label>File</label>
-              <input id="docFile" type="file" />
+              <label>Files</label>
+              <input id="docFile" type="file" multiple />
             </div>
           </div>
           <div class="btns">

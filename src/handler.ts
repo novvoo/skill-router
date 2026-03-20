@@ -693,7 +693,11 @@ function getOpenAIConfigFromRequest(req: http.IncomingMessage): OpenAIConfig {
   const apiKey = headerKey || String(process.env.OPENAI_API_KEY || "");
   const baseUrl = (headerBase || String(process.env.OPENAI_BASE_URL || "")).trim();
   const model = (headerModel || String(process.env.OPENAI_MODEL || "")).trim();
-  const embeddingModel = (headerEmbeddingModel || String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")).trim();
+  const embeddingModel = (
+    headerEmbeddingModel ||
+    String(process.env.EMBEDDING_MODEL || "") ||
+    String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")
+  ).trim();
   const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint || process.env.HF_ENDPOINT) || undefined;
 
   let defaultHeaders: Record<string, string> | undefined;
@@ -892,9 +896,11 @@ function buildDocumentBlock(doc: DocumentContext) {
   ].join("\n");
 }
 
-function buildUserContent(query: string, doc?: DocumentContext | null) {
-  if (!doc) return query;
-  return `${query}\n${buildDocumentBlock(doc)}`;
+function buildUserContent(query: string, doc?: DocumentContext | null, docs?: DocumentContext[] | null) {
+  const list = Array.isArray(docs) && docs.length ? docs : doc ? [doc] : [];
+  if (!list.length) return query;
+  const blocks = list.map(buildDocumentBlock).join("\n");
+  return `${query}\n${blocks}`;
 }
 
 function stripDocumentBlockFromUserContent(userContent: string) {
@@ -984,6 +990,19 @@ function withDocumentInLastUserMessage(messages: ChatHistoryMessage[], doc?: Doc
   return [...out, { role: "user", content: block }];
 }
 
+function withDocumentsInLastUserMessage(messages: ChatHistoryMessage[], docs: DocumentContext[]) {
+  if (!docs.length) return messages;
+  const block = docs.map(buildDocumentBlock).join("\n");
+  const out = [...messages];
+  for (let i = out.length - 1; i >= 0; i--) {
+    if (out[i].role === "user") {
+      out[i] = { ...out[i], content: `${out[i].content}\n${block}` };
+      return out;
+    }
+  }
+  return [...out, { role: "user", content: block }];
+}
+
 async function summarizeConversation(config: OpenAIConfig, older: ChatHistoryMessage[], existingSummary?: string | null) {
   const head = existingSummary ? `已有摘要：\n${String(existingSummary || "").trim()}\n\n` : "";
   const transcript = buildTranscript(older, 9000);
@@ -1054,12 +1073,16 @@ async function runWithRouting(
     messages?: ChatHistoryMessage[] | null;
     summary?: string | null;
     doc?: DocumentContext | null;
+    docs?: DocumentContext[] | null;
+    memory?: { enabled?: boolean; maxResults?: number } | boolean;
     onProgress?: (e: { stage: string; message: string; data?: any }) => void;
   },
 ) {
   const onProgress = args.onProgress;
   const catalog = await loadCatalog();
-  const doc = args.doc || null;
+  const docsIn = Array.isArray(args.docs) ? args.docs.filter((d) => d && typeof d === "object") : [];
+  const docs = docsIn.length ? docsIn : args.doc ? [args.doc] : [];
+  const doc = docs[0] || null;
   const incoming = args.messages && args.messages.length ? args.messages : null;
   const fallbackQuery = String(args.query || "").trim();
   const baseMessages: ChatHistoryMessage[] = incoming
@@ -1070,7 +1093,7 @@ async function runWithRouting(
   if (!baseMessages.length) throw new Error("query or messages is required");
 
   const summaryIn = String(args.summary || "").trim();
-  const withDoc = withDocumentInLastUserMessage(baseMessages, doc);
+  const withDoc = withDocumentsInLastUserMessage(baseMessages, docs);
   const normalized = normalizeChatHistoryMessages(withDoc);
   if (!normalized) throw new Error("invalid messages format");
   onProgress?.({ stage: "compress", message: "压缩对话历史" });
@@ -1080,9 +1103,13 @@ async function runWithRouting(
 
   // Retrieve context
   const sessionId = args.messages?.[0]?.sessionId || undefined;
-  const cm = await getContextManager(config, sessionId);
   const lastUserWithDoc = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;
   const lastUser = stripDocumentBlockFromUserContent(lastUserWithDoc);
+  const memoryEnabled =
+    typeof args.memory === "boolean" ? args.memory : args.memory && typeof args.memory === "object" ? args.memory.enabled !== false : true;
+  const memoryMaxResults =
+    typeof args.memory === "object" && args.memory && typeof args.memory.maxResults === "number" ? Math.max(0, Math.floor(args.memory.maxResults)) : 3;
+  const cm = memoryEnabled ? await getContextManager(config, sessionId) : null;
 
   const apiContextOpts = getExternalApiContextOptionsFromEnv();
   let apiContextPromise: Promise<{ contextText: string; urls: string[]; items: ExternalApiFetchItem[] }>;
@@ -1156,13 +1183,18 @@ async function runWithRouting(
     },
   });
 
-  cm.setReporter(onProgress ? (e) => onProgress(e) : null);
-  onProgress?.({ stage: "memory_search", message: "检索上下文与记忆" });
   let retrieval: RetrievalResult;
-  try {
-    retrieval = await cm.search(lastUser, { maxResults: 3 });
-  } finally {
-    cm.setReporter(null);
+  if (memoryEnabled) {
+    cm!.setReporter(onProgress ? (e) => onProgress(e) : null);
+    onProgress?.({ stage: "memory_search", message: "检索上下文与记忆" });
+    try {
+      retrieval = await cm!.search(lastUser, { maxResults: memoryMaxResults });
+    } finally {
+      cm!.setReporter(null);
+    }
+  } else {
+    retrieval = { nodes: [], trajectory: ["memory retrieval disabled"] };
+    onProgress?.({ stage: "memory_search_skipped", message: "跳过检索上下文与记忆", data: { enabled: false } });
   }
   onProgress?.({ stage: "memory_search_done", message: "检索完成", data: { retrieved_count: retrieval.nodes.length } });
 
@@ -1178,10 +1210,12 @@ async function runWithRouting(
     },
   });
 
-  if (doc && isLikelyTestAddressQuery(lastUser)) {
-    const response = buildTestAddressResponseFromDocContent(doc.content);
-    void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: response }]);
-    void cm.persistSession([...compressed.messages, { role: "assistant", content: response }], summary);
+  if (docs.length && isLikelyTestAddressQuery(lastUser)) {
+    const response = buildTestAddressResponseFromDocContent(docs.map((d) => d.content).join("\n"));
+    if (memoryEnabled && cm) {
+      void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: response }]);
+      void cm.persistSession([...compressed.messages, { role: "assistant", content: response }], summary);
+    }
     return {
       chosen: { skill: "none", confidence: 1.0, reason: "检测到“测试地址/链接”类问题，使用确定性链接抽取避免跑题" },
       skill: null,
@@ -1192,7 +1226,7 @@ async function runWithRouting(
       messages: [...compressed.messages, { role: "assistant", content: response }],
       retrieval_trajectory: retrieval.trajectory,
       retrieved_nodes: retrieval.nodes.map(n => ({ path: n.path, type: n.type, score: n.score })),
-      memory: { retrieval_called: true, retrieved_count: retrieval.nodes.length, used_in_prompt: false },
+      memory: { retrieval_called: memoryEnabled, retrieved_count: retrieval.nodes.length, used_in_prompt: false },
       models: {
         chat: config.model,
         embedding: embeddingUsesKreuzberg
@@ -1215,13 +1249,23 @@ async function runWithRouting(
   const contextText = formatContext(retrieval.nodes);
   const apiContextText = String(apiContext.contextText || "").trim();
 
-  const routingDocSnippet = doc?.content ? doc.content.slice(0, 2000) : "";
+  const routingDocSnippet = docs.length
+    ? docs
+        .map((d, i) => {
+          const name = d.filename || "upload";
+          const head = `[${i + 1}] ${name} (${d.mimeType})`;
+          const body = String(d.content || "").slice(0, 800);
+          return `${head}\n${body}`;
+        })
+        .join("\n\n")
+        .slice(0, 2000)
+    : "";
   const routingMessages = stripDocumentBlocksForRouting(compressed.messages);
   const routingParts = [
     lastUser,
     summary ? `\n\n[对话摘要]\n${summary}` : "",
     routingMessages.length ? `\n\n[最近对话]\n${buildTranscript(routingMessages.slice(-8), 3000)}` : "",
-    doc ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
+    docs.length ? `\n\n[用户上传文档节选]\n${routingDocSnippet}` : "",
     contextText ? `\n\n${contextText}` : "",
     apiContextText ? `\n\n${apiContextText}` : "",
   ].filter(Boolean);
@@ -1233,7 +1277,7 @@ async function runWithRouting(
     retrieval_trajectory: retrieval.trajectory,
     retrieved_nodes: retrieval.nodes.map(n => ({ path: n.path, type: n.type, score: n.score })),
     memory: {
-      retrieval_called: true,
+      retrieval_called: memoryEnabled,
       retrieved_count: retrieval.nodes.length,
       used_in_prompt: Boolean(contextText),
     },
@@ -1262,7 +1306,7 @@ async function runWithRouting(
   };
 
   if (chosen.skill === "none") {
-    const docPolicy = doc
+    const docPolicy = docs.length
       ? "如果用户上传了参考文档：优先回答用户当前问题；除非用户明确要求“总结/概览/摘要”，否则不要对文档做整体总结；当用户询问地址/链接/URL（尤其测试地址、沙箱/预发环境）时，只能返回文档中真实出现的链接/域名，找不到就明确说明未提供。"
       : "";
     const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -1275,25 +1319,24 @@ async function runWithRouting(
     ];
     onProgress?.({ stage: "chat", message: "生成回复" });
     const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-  const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
+    const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
     onProgress?.({ stage: "chat_done", message: "回复生成完成" });
-  
-  // Async memory extraction
-  void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-  
-  // Async session persistence
-  void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+    
+    if (memoryEnabled && cm) {
+      void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+      void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+    }
 
-  return {
-    chosen,
-    skill: null,
-    used_skills: [],
-    response: content,
-    summary,
-    summarized: compressed.summarized,
-    messages: [...compressed.messages, { role: "assistant", content }],
-    ...extraFields,
-  };
+    return {
+      chosen,
+      skill: null,
+      used_skills: [],
+      response: content,
+      summary,
+      summarized: compressed.summarized,
+      messages: [...compressed.messages, { role: "assistant", content }],
+      ...extraFields,
+    };
 }
 
 const meta = catalog.byName.get(chosen.skill) || null;
@@ -1314,17 +1357,15 @@ if (!meta) {
   const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
   onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
-  // Async memory extraction
-  void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-
-  // Async session persistence
-  void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+  if (memoryEnabled && cm) {
+    void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+    void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+  }
 
   return {
     chosen,
     skill: null,
     used_skills: [],
-    response: content,
     summary,
     summarized: compressed.summarized,
     messages: [...compressed.messages, { role: "assistant", content }],
@@ -1334,7 +1375,7 @@ if (!meta) {
 
 const skillText = await fetchSkillText(meta.path);
 const systemContent = ["你是一个具备工具/技能注入能力的助手。以下内容是当前选中的 Skill，必须遵循。", skillText].join("\n\n");
-const docPolicy = doc
+const docPolicy = docs.length
   ? "如果用户上传了参考文档：优先回答用户当前问题；除非用户明确要求“总结/概览/摘要”，否则不要对文档做整体总结；当用户询问地址/链接/URL（尤其测试地址、沙箱/预发环境）时，只能返回文档中真实出现的链接/域名，找不到就明确说明未提供。"
   : "";
 const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: string }> = [
@@ -1350,11 +1391,10 @@ const result = await chatCompletions(config, { messages: promptMessages, tempera
 const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
 onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
-// Async memory extraction
-void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-
-// Async session persistence
-void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+if (memoryEnabled && cm) {
+  void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
+  void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+}
 
 return {
   chosen,
@@ -1371,14 +1411,23 @@ return {
 async function parseMultipart(req: http.IncomingMessage, maxBytes: number) {
   return await new Promise<{
     fields: Record<string, string>;
-    file: { fieldname: string; filename: string | null; mimeType: string | null; data: Buffer } | null;
+    files: { fieldname: string; filename: string | null; mimeType: string | null; data: Buffer }[];
   }>((resolve, reject) => {
     const fields: Record<string, string> = {};
-    let fileResult: { fieldname: string; filename: string | null; mimeType: string | null; data: Buffer } | null = null;
+    const files: { fieldname: string; filename: string | null; mimeType: string | null; data: Buffer }[] = [];
+    const maxFiles = 10;
+    const maxTotalBytes = maxBytes * maxFiles;
+    let totalBytes = 0;
+    let done = false;
+    const bail = (err: any) => {
+      if (done) return;
+      done = true;
+      reject(err);
+    };
 
     const bb = Busboy({
       headers: req.headers,
-      limits: { fileSize: maxBytes, files: 1, fields: 100 },
+      limits: { fileSize: maxBytes, files: maxFiles, fields: 200 },
     });
 
     bb.on("field", (name, value) => {
@@ -1389,21 +1438,29 @@ async function parseMultipart(req: http.IncomingMessage, maxBytes: number) {
       const filename = info?.filename ? String(info.filename) : null;
       const mimeType = info?.mimeType ? String(info.mimeType) : null;
       const chunks: Buffer[] = [];
+      let fileBytes = 0;
       file.on("data", (d: Buffer) => {
+        fileBytes += d.byteLength;
+        totalBytes += d.byteLength;
+        if (totalBytes > maxTotalBytes) return bail(new Error("total upload too large"));
         chunks.push(d);
       });
-      file.on("limit", () => reject(new Error("file too large")));
+      file.on("limit", () => bail(new Error("file too large")));
       file.on("end", () => {
-        if (!fileResult) {
-          const data = Buffer.concat(chunks);
-          if (data.byteLength > maxBytes) return reject(new Error("file too large"));
-          fileResult = { fieldname, filename, mimeType, data };
-        }
+        if (done) return;
+        if (fileBytes > maxBytes) return bail(new Error("file too large"));
+        const data = Buffer.concat(chunks);
+        if (data.byteLength > maxBytes) return bail(new Error("file too large"));
+        files.push({ fieldname, filename, mimeType, data });
       });
     });
 
-    bb.on("error", (err) => reject(err));
-    bb.on("finish", () => resolve({ fields, file: fileResult }));
+    bb.on("error", (err) => bail(err));
+    bb.on("finish", () => {
+      if (done) return;
+      done = true;
+      resolve({ fields, files });
+    });
     req.pipe(bb);
   });
 }
@@ -1414,20 +1471,25 @@ async function handleDocumentsExtract(req: http.IncomingMessage, res: http.Serve
 
   if (ct.includes("multipart/form-data")) {
     const parsed = await parseMultipart(req, maxBytes);
-    const file = parsed.file;
-    if (!file || (file.fieldname !== "file" && file.fieldname !== "document")) {
+    const files = parsed.files.filter((f) => f.fieldname === "file" || f.fieldname === "document");
+    if (!files.length) {
       throw new Error("missing file field (file|document)");
     }
-    const mimeType = resolveMimeType({
-      provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
-      fileMimeType: file.mimeType,
-      filename: file.filename,
-      data: file.data,
-    });
-    if (!mimeType) throw new Error("mime_type is required");
-    const uint8Array = new Uint8Array(file.data);
-    const result = await extractBytes(uint8Array, mimeType);
-    return sendJson(res, 200, { filename: file.filename, mime_type: mimeType, result });
+    const out = [];
+    for (const file of files) {
+      const mimeType = resolveMimeType({
+        provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
+        fileMimeType: file.mimeType,
+        filename: file.filename,
+        data: file.data,
+      });
+      if (!mimeType) throw new Error("mime_type is required");
+      const uint8Array = new Uint8Array(file.data);
+      const result = await extractBytes(uint8Array, mimeType);
+      out.push({ filename: file.filename, mime_type: mimeType, result });
+    }
+    if (out.length === 1) return sendJson(res, 200, out[0]);
+    return sendJson(res, 200, { results: out });
   }
 
   if (ct.includes("application/json")) {
@@ -1555,7 +1617,7 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         endpoints: {
           skills: { method: "GET", path: "/skills" },
           choose: { method: "POST", path: "/choose", body: { query: "..." } },
-          run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file+mime_type)" },
+          run: { method: "POST", path: "/run", body: "application/json({query}) | multipart/form-data(query+file(s)+mime_type)" },
           documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data | application/json(base64)" },
           memories: { method: "GET,POST,DELETE", path: "/memories" },
           embeddings_status: { method: "GET", path: "/embeddings/status" },
@@ -1942,8 +2004,8 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         const summary = String(parsed.fields["summary"] || "");
         const hasSystemContentField = Object.prototype.hasOwnProperty.call(parsed.fields, "systemContent") || Object.prototype.hasOwnProperty.call(parsed.fields, "system_content");
         const systemContentFromBody = hasSystemContentField ? String(parsed.fields["systemContent"] || parsed.fields["system_content"] || "") : null;
-        const file = parsed.file;
-        if (!file || (file.fieldname !== "file" && file.fieldname !== "document")) {
+        const files = Array.isArray(parsed.files) ? parsed.files.filter((f: any) => f && (f.fieldname === "file" || f.fieldname === "document")) : [];
+        if (!files.length) {
           if (wantsStream) {
             writeSse(res, "error", { error: "missing file field (file|document)" });
             writeSse(res, "done", {});
@@ -1951,33 +2013,44 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }
           return sendJson(res, 400, { error: "missing file field (file|document)" });
         }
-        const mimeType = resolveMimeType({
-          provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
-          fileMimeType: file.mimeType,
-          filename: file.filename,
-          data: file.data,
-        });
-        if (!mimeType) {
-          if (wantsStream) {
-            writeSse(res, "error", { error: "mime_type is required" });
-            writeSse(res, "done", {});
-            return res.end();
+        const totalMaxChars = 60000;
+        const perMaxChars =
+          files.length <= 1 ? totalMaxChars : Math.max(4000, Math.min(totalMaxChars, Math.floor(totalMaxChars / files.length)));
+        const docs: DocumentContext[] = [];
+        for (let i = 0; i < files.length; i++) {
+          const file = files[i];
+          const mimeType = resolveMimeType({
+            provided: String(parsed.fields["mime_type"] || parsed.fields["mimeType"] || ""),
+            fileMimeType: file.mimeType,
+            filename: file.filename,
+            data: file.data,
+          });
+          if (!mimeType) {
+            if (wantsStream) {
+              writeSse(res, "error", { error: "mime_type is required" });
+              writeSse(res, "done", {});
+              return res.end();
+            }
+            return sendJson(res, 400, { error: "mime_type is required" });
           }
-          return sendJson(res, 400, { error: "mime_type is required" });
+          emit({
+            stage: "extract_document",
+            message: files.length > 1 ? `提取文档内容 (${i + 1}/${files.length})` : "提取文档内容",
+            data: { mime_type: mimeType, filename: file.filename },
+          });
+          const uint8Array = new Uint8Array(file.data);
+          const extracted = await extractBytes(uint8Array, mimeType);
+          const rawContent = String((extracted as any)?.content || "");
+          const content = rawContent.slice(0, perMaxChars);
+          docs.push({
+            filename: file.filename,
+            mimeType,
+            content,
+            contentChars: rawContent.length,
+            truncated: rawContent.length > perMaxChars,
+          });
         }
-        emit({ stage: "extract_document", message: "提取文档内容", data: { mime_type: mimeType, filename: file.filename } });
-        const uint8Array = new Uint8Array(file.data);
-        const extracted = await extractBytes(uint8Array, mimeType);
-        const rawContent = String((extracted as any)?.content || "");
-        const maxChars = 60000;
-        const content = rawContent.slice(0, maxChars);
-        const doc: DocumentContext = {
-          filename: file.filename,
-          mimeType,
-          content,
-          contentChars: rawContent.length,
-          truncated: rawContent.length > maxChars,
-        };
+        const doc = docs[0] || null;
         let config: OpenAIConfig;
         try {
           config = getOpenAIConfigFromRequest(req);
@@ -1993,8 +2066,26 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         if (systemContentFromBody !== null) config.systemContent = systemContentFromBody.trim() ? systemContentFromBody : undefined;
         emit({ stage: "run", message: "开始路由与执行" });
         try {
-          const result = await runWithRouting(config, { query, messages, summary, doc, onProgress: emit });
-          const payload = { ...result, document: { filename: doc.filename, mime_type: doc.mimeType, content_chars: doc.contentChars, truncated: doc.truncated } };
+          const memoryEnabled = (() => {
+            const raw = parsed.fields["memory"] ?? parsed.fields["use_memory"] ?? parsed.fields["memory_enabled"];
+            if (typeof raw !== "string") return true;
+            const v = String(raw || "").trim().toLowerCase();
+            if (!v) return true;
+            if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+            if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+            return true;
+          })();
+          const result = await runWithRouting(config, { query, messages, summary, doc, docs, memory: { enabled: memoryEnabled }, onProgress: emit });
+          const documents = docs.map((d) => ({
+            filename: d.filename,
+            mime_type: d.mimeType,
+            content_chars: d.contentChars,
+            truncated: d.truncated,
+          }));
+          const payload =
+            documents.length === 1
+              ? { ...result, document: documents[0], documents }
+              : { ...result, documents };
           if (wantsStream) {
             writeSse(res, "result", payload);
             writeSse(res, "done", {});
@@ -2053,7 +2144,21 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       if (systemContentFromBody !== null) config.systemContent = systemContentFromBody.trim() ? systemContentFromBody : undefined;
       emit({ stage: "run", message: "开始路由与执行" });
       try {
-        const result = await runWithRouting(config, { query, messages, summary, onProgress: emit });
+        const memoryEnabled = (() => {
+          if (Object.prototype.hasOwnProperty.call(body || {}, "use_memory")) return Boolean((body as any).use_memory);
+          if (Object.prototype.hasOwnProperty.call(body || {}, "memory_enabled")) {
+            const v = String((body as any).memory_enabled ?? "").trim().toLowerCase();
+            if (v === "0" || v === "false" || v === "off" || v === "no") return false;
+            if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
+          }
+          if (Object.prototype.hasOwnProperty.call(body || {}, "memory")) {
+            const m = (body as any).memory;
+            if (typeof m === "boolean") return m;
+            if (m && typeof m === "object" && Object.prototype.hasOwnProperty.call(m, "enabled")) return Boolean((m as any).enabled);
+          }
+          return true;
+        })();
+        const result = await runWithRouting(config, { query, messages, summary, memory: { enabled: memoryEnabled }, onProgress: emit });
         if (wantsStream) {
           writeSse(res, "result", result);
           writeSse(res, "done", {});

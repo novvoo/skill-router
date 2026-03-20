@@ -93,6 +93,10 @@ function loadCfg() {
     local.embeddingModel = normalizedEmbeddingModel;
     const rawHfEndpoint = String(local.hfEndpoint || "").trim();
     local.hfEndpoint = HF_ENDPOINT_OPTIONS.has(rawHfEndpoint) ? rawHfEndpoint : "";
+    if (typeof local.memoryEnabled !== "boolean") {
+      const raw = String(local.memoryEnabled ?? "").trim().toLowerCase();
+      local.memoryEnabled = !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+    }
     return local;
   } catch {
     return {};
@@ -206,6 +210,7 @@ function cfgFromInputs() {
     model: document.getElementById("model").value.trim(),
     embeddingModel: document.getElementById("embeddingModel").value.trim(),
     hfEndpoint: document.getElementById("hfEndpoint").value.trim(),
+    memoryEnabled: Boolean(document.getElementById("memoryEnabled")?.checked),
     defaultHeaders: customHeadersFromTable(),
     systemContent: document.getElementById("systemContent").value.trim(),
   };
@@ -217,6 +222,7 @@ function fillInputs(cfg) {
   document.getElementById("model").value = cfg.model || "";
   document.getElementById("embeddingModel").value = cfg.embeddingModel || "";
   document.getElementById("hfEndpoint").value = cfg.hfEndpoint || "";
+  if (document.getElementById("memoryEnabled")) document.getElementById("memoryEnabled").checked = cfg.memoryEnabled !== false;
   fillCustomHeadersTable(cfg.defaultHeaders);
   document.getElementById("systemContent").value = cfg.systemContent || "";
 }
@@ -604,7 +610,7 @@ async function sendChat() {
   const query = String(input.value || "").trim();
   if (!query) return;
 
-  const file = document.getElementById("chatDocFile").files?.[0] || null;
+  const files = Array.from(document.getElementById("chatDocFile")?.files || []);
   const nextCtxMessages = [...chatCtxMessages, { role: "user", content: query, sessionId: getSessionId() }];
 
   setChatHint("");
@@ -699,13 +705,14 @@ async function sendChat() {
       chatMessages[assistantIndex] = { ...(chatMessages[assistantIndex] || {}), role: "assistant", text: "思考中…", meta, progressLogs };
       renderChat();
     };
-    if (file) {
+    if (files.length) {
       const form = new FormData();
       form.append("query", query);
-      form.append("file", file, file.name);
+      for (const f of files) form.append("file", f, f.name);
       form.append("messages", JSON.stringify(nextCtxMessages));
       if (chatSummary) form.append("summary", String(chatSummary || ""));
       const cfg = loadCfg();
+      form.append("memory_enabled", cfg.memoryEnabled === false ? "0" : "1");
       if (cfg.systemContent) form.append("systemContent", String(cfg.systemContent || ""));
       data = await apiRunStream({ method: "POST", url: "/run", body: form, cfg, onStage: setProgress });
     } else {
@@ -714,7 +721,13 @@ async function sendChat() {
         method: "POST",
         url: "/run",
         json: true,
-        body: { query, messages: nextCtxMessages, summary: chatSummary, ...(cfg.systemContent ? { systemContent: String(cfg.systemContent || "") } : {}) },
+        body: {
+          query,
+          messages: nextCtxMessages,
+          summary: chatSummary,
+          memory: { enabled: cfg.memoryEnabled !== false },
+          ...(cfg.systemContent ? { systemContent: String(cfg.systemContent || "") } : {}),
+        },
         cfg,
         onStage: setProgress,
       });
@@ -864,14 +877,14 @@ function newChat() {
 async function doExtract() {
   const out = document.getElementById("docOut");
   out.textContent = "Loading...";
-  const file = document.getElementById("docFile").files?.[0] || null;
-  if (!file) {
+  const files = Array.from(document.getElementById("docFile")?.files || []);
+  if (!files.length) {
     out.textContent = pretty({ error: "missing file" });
     return;
   }
   try {
     const form = new FormData();
-    form.append("file", file, file.name);
+    for (const f of files) form.append("file", f, f.name);
     const url = resolveApiUrl("/documents/extract");
     let resp;
     try {
@@ -888,7 +901,14 @@ async function doExtract() {
       data = { raw: text };
     }
     if (!resp.ok) throw Object.assign(new Error(data?.error || `HTTP ${resp.status}`), { data });
-    out.textContent = pretty({ filename: data.filename, result: { ...data.result, content: String(data?.result?.content || "").slice(0, 2000) } });
+    const list = Array.isArray(data?.results) ? data.results : [data];
+    out.textContent = pretty(
+      list.map((it) => ({
+        filename: it?.filename,
+        mime_type: it?.mime_type,
+        result: { ...it?.result, content: String(it?.result?.content || "").slice(0, 2000) },
+      })),
+    );
   } catch (e) {
     out.textContent = pretty({ error: e.message, detail: e.data || null });
   }
@@ -1054,6 +1074,15 @@ async function checkConnectivity() {
 const cfgStatus = document.getElementById("cfgStatus");
 fillInputs(loadCfg());
 setStatus(cfgStatus, true, "提示：配置保存在浏览器本地（localStorage），关闭/重新打开仍保留");
+
+const memoryEnabledEl = document.getElementById("memoryEnabled");
+if (memoryEnabledEl) {
+  memoryEnabledEl.addEventListener("change", () => {
+    const cfg = loadCfg();
+    cfg.memoryEnabled = Boolean(memoryEnabledEl.checked);
+    saveCfg(cfg);
+  });
+}
 
 document.getElementById("saveCfg").addEventListener("click", () => {
   const cfg = cfgFromInputs();

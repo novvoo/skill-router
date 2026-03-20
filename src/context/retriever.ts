@@ -62,7 +62,8 @@ export class ContextRetriever {
   }
 
   public async retrieve(options: RetrievalOptions): Promise<RetrievalResult> {
-    const queryVec = await this.embed(options.query);
+    const hasSemanticIndex = this.nodeEmbeddings.size > 0;
+    const queryVec = hasSemanticIndex ? await this.embed(options.query) : [];
     const trajectory: string[] = [];
     const candidates: ContextNode[] = [];
 
