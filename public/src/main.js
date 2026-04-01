@@ -116,6 +116,16 @@ class App {
       }
     });
 
+    // Debug function to check button bindings
+    window.checkButtonBindings = () => {
+      const buttons = document.querySelectorAll('button[id]');
+      console.log('=== Button Binding Check ===');
+      buttons.forEach(btn => {
+        const hasListeners = btn.onclick || btn.addEventListener.toString().includes('native');
+        console.log(`${btn.id}: ${hasListeners ? '✅' : '❌'} (${btn.textContent.trim()})`);
+      });
+    };
+
     // Handle mobile menu toggle
     const mobileToggle = document.getElementById('mobile-menu-toggle');
     const navbar = document.getElementById('navbar');

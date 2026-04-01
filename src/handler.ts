@@ -3434,3 +3434,5 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return sendJson(res, 500, { error: String(e?.message || e) });
   }
 }
+
+export { chatCompletionsWithTools };

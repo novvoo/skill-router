@@ -10,6 +10,7 @@ import { taskAPI } from "./api/TaskAPI.js";
 import { getEmbeddingWarningsTail } from "./context/embeddings.js";
 import { fetchExternalApiContextsFromText, getExternalApiContextOptionsFromEnv } from "./context/external_api.js";
 import { ToolExecutor } from "./tools/ToolExecutor.js";
+import { StreamingToolExecutor } from "./tools/StreamingToolExecutor.js";
 const contextManagers = new Map();
 async function getContextManager(config, sessionId) {
     const key = sessionId || "default";
@@ -1238,38 +1239,40 @@ async function chatCompletionsWithTools(config, { messages, tools, temperature =
     if (toolCalls && toolCalls.length > 0 && toolExecutor) {
         onProgress?.({ stage: "tools_start", message: "执行工具调用" });
         const parsedToolCalls = toolCalls.map((tc) => ({
-            id: tc.id,
-            name: tc.function.name,
-            arguments: JSON.parse(tc.function.arguments || "{}"),
+            id: String(tc.id || `tool_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`),
+            name: String(tc.function?.name || ""),
+            arguments: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {},
         }));
-        const toolResults = await toolExecutor.executeToolCalls(parsedToolCalls, {
+        const toolResults = await toolExecutor.executeToolCallsStreaming(parsedToolCalls, {
             sessionId,
             abortController: abortController || new AbortController(),
             onProgress: onProgress ? (progress) => {
                 onProgress({
                     stage: "tool_progress",
-                    message: progress.message,
-                    data: progress,
+                    message: `${progress.toolName}: ${progress.message}`,
+                    data: {
+                        toolId: progress.toolId,
+                        toolName: progress.toolName,
+                        status: progress.status,
+                        stage: progress.stage,
+                        ...progress.data
+                    }
                 });
             } : undefined,
         });
-        onProgress?.({ stage: "tools_complete", message: "工具调用完成", data: { toolCount: toolResults.length } });
-        // Add tool results to messages and make another call
-        const toolMessages = toolResults.map(result => ({
+        onProgress?.({ stage: "tools_complete", message: "工具调用完成" });
+        // Add tool results to messages and make another completion call
+        const toolMessages = toolResults.map((result) => ({
             role: "tool",
-            content: result.error
-                ? `Error: ${result.error}`
-                : typeof result.result === "string"
-                    ? result.result
-                    : JSON.stringify(result.result),
+            content: result.error ? `Error: ${result.error}` : JSON.stringify(result.result),
             tool_call_id: result.id,
         }));
         const updatedMessages = [
-            ...messages,
-            { role: "assistant", content: content || "I'll use the available tools to help you." },
+            ...finalMessages,
+            { role: "assistant", content: content || "", tool_calls: toolCalls },
             ...toolMessages,
         ];
-        // Recursive call to get the final response
+        // Make another completion call with tool results
         return await chatCompletionsWithTools(config, {
             messages: updatedMessages,
             tools,
@@ -1281,7 +1284,7 @@ async function chatCompletionsWithTools(config, { messages, tools, temperature =
             abortController,
         });
     }
-    return { content, raw, toolCalls: toolCalls || [] };
+    return { content, raw };
 }
 async function chooseSkill(config, query) {
     const catalog = await loadCatalog();
@@ -1511,7 +1514,7 @@ async function runWithRouting(config, args) {
     // Initialize tool executor
     const toolsEnabled = typeof args.tools === "boolean" ? args.tools : args.tools && typeof args.tools === "object" ? args.tools.enabled !== false : true;
     const allowedTools = typeof args.tools === "object" && args.tools && Array.isArray(args.tools.allowedTools) ? args.tools.allowedTools : undefined;
-    const toolExecutor = toolsEnabled ? new ToolExecutor(config) : null;
+    const toolExecutor = toolsEnabled ? new StreamingToolExecutor(config) : null;
     // Retrieve context
     const sessionId = args.messages?.[0]?.sessionId || undefined;
     const lastUserWithDoc = [...compressed.messages].reverse().find((m) => m.role === "user")?.content || fallbackQuery;

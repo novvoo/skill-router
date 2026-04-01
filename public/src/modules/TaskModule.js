@@ -43,10 +43,20 @@ export class TaskModule extends BaseModule {
     // 任务类型切换
     this.addEventListener('#task-type', 'change', () => this.toggleTaskTypeFields());
     
-    // 过滤按钮
-    this.addEventListener('.filter-btn', 'click', (e) => {
-      const filter = e.target.dataset.filter;
-      if (filter) this.filterTasks(filter);
+    // 过滤按钮 - 使用事件委托
+    document.addEventListener('click', (e) => {
+      if (e.target.classList.contains('filter-btn') && this.isActive) {
+        const filter = e.target.dataset.filter;
+        if (filter) {
+          this.filterTasks(filter);
+          
+          // 更新按钮状态
+          document.querySelectorAll('.filter-btn').forEach(btn => {
+            btn.classList.remove('active');
+          });
+          e.target.classList.add('active');
+        }
+      }
     });
   }
 

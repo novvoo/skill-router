@@ -149,6 +149,13 @@ export class TerminalModule extends BaseModule {
     this.addToHistory('system', '🤖 Processing...');
     
     try {
+      // Check if OpenAI config is complete
+      const config = this.config.getConfig();
+      if (!config.apiKey || !config.baseUrl || !config.model) {
+        this.addToHistory('error', 'OpenAI configuration is missing. Please go to Settings and configure your API key, base URL, and model.');
+        return;
+      }
+      
       const result = await this.api.post('/run', {
         query: command,
         tools: { enabled: true },

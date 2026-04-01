@@ -12,11 +12,20 @@ export class TerminalUI {
   private isInteractive = false
   private rl: any
 
-  async startInteractiveMode(): Promise<void> {
+  async startInteractiveMode(config?: { apiKey: string; baseUrl: string; model: string }): Promise<void> {
     // 直接导入，避免循环依赖问题
     if (!this.commandProcessor) {
       const { CommandProcessor } = await import('./CommandProcessor.js')
       this.commandProcessor = new CommandProcessor()
+      
+      // Set config if provided
+      if (config && config.apiKey && config.baseUrl && config.model) {
+        this.commandProcessor.setConfig({
+          apiKey: config.apiKey,
+          baseUrl: config.baseUrl,
+          model: config.model
+        })
+      }
     }
     
     if (!this.progressTracker) {

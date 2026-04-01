@@ -535,11 +535,8 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
 
   const rawModel = String(config.embeddingModel || "").trim();
   const parsedPreset = parseKreuzbergPreset(rawModel);
-  const useKreuzberg = Boolean(parsedPreset);
   const preset = parsedPreset || "fast";
-  if (useKreuzberg) {
-    lastEmbeddingDim = getDimension(preset);
-  }
+  lastEmbeddingDim = getDimension(preset);
   const hfEndpoint = normalizeHfEndpoint((config as any).hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT);
 
   const cacheDir = resolveKreuzbergCacheDir();
@@ -558,7 +555,7 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
     }
   }
 
-  if (useKreuzberg && !hfCacheRepaired) {
+  if (!hfCacheRepaired) {
     hfCacheRepaired = true;
     try {
       repairHfHubCache(cacheDir);
@@ -567,34 +564,6 @@ export async function createEmbeddings(config: OpenAIConfig, input: string | str
     try {
       repairHfHubCache(hubCache);
     } catch {
-    }
-  }
-
-  if (!useKreuzberg) {
-    const nonEmpty: Array<{ index: number; text: string }> = [];
-    const empty = new Set<number>();
-    const out: number[][] = inputs.map(() => []);
-    for (let i = 0; i < inputs.length; i++) {
-      const text = String(inputs[i] || "");
-      if (!text.trim()) {
-        empty.add(i);
-        continue;
-      }
-      nonEmpty.push({ index: i, text });
-    }
-    try {
-      if (!nonEmpty.length) return inputs.map(() => zeroVector(lastEmbeddingDim));
-      const vecs = await createOpenAIEmbeddings(
-        config,
-        rawModel || DEFAULT_OPENAI_EMBEDDING_MODEL,
-        nonEmpty.map((x) => x.text),
-      );
-      for (let i = 0; i < nonEmpty.length; i++) out[nonEmpty[i].index] = vecs[i];
-      for (const idx of empty) out[idx] = zeroVector(lastEmbeddingDim);
-      return out.map((v) => (v.length ? v : zeroVector(lastEmbeddingDim)));
-    } catch (e: any) {
-      console.error("OpenAI-compatible embedding failed:", e);
-      return inputs.map(() => zeroVector(lastEmbeddingDim));
     }
   }
 

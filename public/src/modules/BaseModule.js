@@ -58,26 +58,49 @@ export class BaseModule {
 
   // Event handling
   addEventListener(selector, event, handler) {
-    if (this.element) {
-      const target = typeof selector === 'string' 
-        ? this.element.querySelector(selector)
-        : selector;
-      
-      if (target) {
-        target.addEventListener(event, handler);
+    let target;
+    
+    if (typeof selector === 'string') {
+      // First try to find within the module element
+      if (this.element) {
+        target = this.element.querySelector(selector);
       }
+      
+      // If not found and selector starts with # or ., try global search
+      if (!target && (selector.startsWith('#') || selector.startsWith('.'))) {
+        target = document.querySelector(selector);
+      }
+    } else {
+      target = selector;
+    }
+    
+    if (target) {
+      target.addEventListener(event, handler);
+      console.debug(`Event listener added: ${selector} -> ${event}`);
+    } else {
+      console.warn(`Element not found for selector: ${selector}`);
     }
   }
 
   removeEventListener(selector, event, handler) {
-    if (this.element) {
-      const target = typeof selector === 'string' 
-        ? this.element.querySelector(selector)
-        : selector;
-      
-      if (target) {
-        target.removeEventListener(event, handler);
+    let target;
+    
+    if (typeof selector === 'string') {
+      // First try to find within the module element
+      if (this.element) {
+        target = this.element.querySelector(selector);
       }
+      
+      // If not found and selector starts with #, try global search
+      if (!target && selector.startsWith('#')) {
+        target = document.querySelector(selector);
+      }
+    } else {
+      target = selector;
+    }
+    
+    if (target) {
+      target.removeEventListener(event, handler);
     }
   }
 

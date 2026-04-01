@@ -56,8 +56,19 @@ async function main() {
             console.log(`🎯 Coordinator mode active`);
         }
         console.log('');
+        // Get OpenAI config from environment variables
+        const apiKey = String(process.env.OPENAI_API_KEY || "").trim();
+        const baseUrl = String(process.env.OPENAI_BASE_URL || "").trim();
+        const model = String(process.env.OPENAI_MODEL || "").trim();
+        if (apiKey && baseUrl && model) {
+            console.log(`🔧 OpenAI configuration loaded from environment variables`);
+        }
+        else {
+            console.warn(`⚠️  OpenAI configuration not found in environment variables`);
+            console.warn(`   Tools will not be available without proper OpenAI configuration`);
+        }
         const terminal = new TerminalUI();
-        await terminal.startInteractiveMode();
+        await terminal.startInteractiveMode({ apiKey, baseUrl, model });
     }
     else {
         // Start HTTP server mode

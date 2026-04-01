@@ -64,14 +64,25 @@ export class AgentTaskExecutor extends EventEmitter {
 
     // 启动Agent
     try {
+      // 从环境变量获取OpenAI配置
+      const apiKey = String(process.env.OPENAI_API_KEY || "").trim()
+      const baseUrl = String(process.env.OPENAI_BASE_URL || "").trim()
+      const model = String(process.env.OPENAI_MODEL || "").trim()
+      
       const agentInstance = await this.agentManager.spawnAgent(
         options.agentType,
         options.prompt,
         {
           description: options.description,
           background: options.background || false,
-          model: options.model,
-          sessionId: taskId
+          model: options.model || model,
+          sessionId: taskId,
+          // 传递OpenAI配置
+          openaiConfig: {
+            apiKey,
+            baseUrl,
+            model: options.model || model
+          }
         }
       )
 

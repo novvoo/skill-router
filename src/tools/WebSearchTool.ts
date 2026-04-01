@@ -11,113 +11,102 @@ const inputSchema = z.object({
     .array(z.string())
     .optional()
     .describe('Never include search results from these domains'),
-  max_results: z
-    .number()
-    .int()
-    .min(1)
-    .max(20)
-    .default(10)
-    .describe('Maximum number of search results to return'),
 })
 
 const searchResultSchema = z.object({
   title: z.string().describe('The title of the search result'),
   url: z.string().describe('The URL of the search result'),
-  snippet: z.string().describe('A brief snippet of the content'),
+})
+
+const webSearchResultSchema = z.object({
+  tool_use_id: z.string().describe('ID of the tool use'),
+  content: z.array(searchResultSchema).describe('Array of search hits'),
 })
 
 const outputSchema = z.object({
   query: z.string().describe('The search query that was executed'),
-  results: z.array(searchResultSchema).describe('Array of search results'),
+  results: z.array(z.union([webSearchResultSchema, z.string()])).describe('Search results and/or text commentary from the model'),
   durationSeconds: z.number().describe('Time taken to complete the search operation'),
-  total_results: z.number().describe('Total number of results found'),
 })
 
 export type WebSearchInput = z.infer<typeof inputSchema>
 export type WebSearchOutput = z.infer<typeof outputSchema>
 export type SearchResult = z.infer<typeof searchResultSchema>
+export type WebSearchResult = z.infer<typeof webSearchResultSchema>
 
 export type WebSearchProgress = {
-  type: 'search_start' | 'search_results_received' | 'search_complete'
+  type: 'search_start' | 'search_results_received' | 'search_complete' | 'query_update'
   query?: string
   resultCount?: number
 }
 
-// Mock search function - in a real implementation, this would use a search API
-async function performWebSearch(
-  query: string,
-  options: {
-    allowedDomains?: string[]
-    blockedDomains?: string[]
-    maxResults?: number
-  },
-  signal?: AbortSignal
-): Promise<{
-  results: SearchResult[]
-  totalResults: number
-}> {
-  // Simulate API delay
-  await new Promise(resolve => setTimeout(resolve, 1000))
-  
-  if (signal?.aborted) {
-    throw new Error('Search aborted')
-  }
-  
-  // Mock search results - in a real implementation, this would call a search API
-  const mockResults: SearchResult[] = [
-    {
-      title: `Search results for: ${query}`,
-      url: `https://example.com/search?q=${encodeURIComponent(query)}`,
-      snippet: `This is a mock search result for the query "${query}". In a real implementation, this would return actual search results from a search engine API.`,
-    },
-    {
-      title: `${query} - Documentation`,
-      url: `https://docs.example.com/${query.toLowerCase().replace(/\s+/g, '-')}`,
-      snippet: `Official documentation and guides related to ${query}. Learn more about the concepts, APIs, and best practices.`,
-    },
-    {
-      title: `${query} Tutorial`,
-      url: `https://tutorial.example.com/${query.toLowerCase().replace(/\s+/g, '-')}`,
-      snippet: `Step-by-step tutorial covering ${query}. Includes examples, code samples, and practical exercises.`,
-    },
-  ]
-  
-  // Apply domain filtering
-  let filteredResults = mockResults
-  
-  if (options.allowedDomains?.length) {
-    filteredResults = filteredResults.filter(result => {
-      try {
-        const hostname = new URL(result.url).hostname
-        return options.allowedDomains!.some(domain => 
-          hostname === domain || hostname.endsWith('.' + domain)
-        )
-      } catch {
-        return false
-      }
-    })
-  }
-  
-  if (options.blockedDomains?.length) {
-    filteredResults = filteredResults.filter(result => {
-      try {
-        const hostname = new URL(result.url).hostname
-        return !options.blockedDomains!.some(domain => 
-          hostname === domain || hostname.endsWith('.' + domain)
-        )
-      } catch {
-        return true
-      }
-    })
-  }
-  
-  // Limit results
-  const maxResults = options.maxResults || 10
-  filteredResults = filteredResults.slice(0, maxResults)
-  
+// Web search tool schema for Anthropic API
+function makeToolSchema(input: WebSearchInput) {
   return {
-    results: filteredResults,
-    totalResults: mockResults.length,
+    type: 'web_search_20250305',
+    name: 'web_search',
+    allowed_domains: input.allowed_domains,
+    blocked_domains: input.blocked_domains,
+    max_uses: 8, // Hardcoded to 8 searches maximum
+  }
+}
+
+// Process search response from Anthropic API
+function makeOutputFromSearchResponse(
+  result: any[],
+  query: string,
+  durationSeconds: number
+): WebSearchOutput {
+  const results: (WebSearchResult | string)[] = []
+  let textAcc = ''
+  let inText = true
+
+  for (const block of result) {
+    if (block.type === 'server_tool_use') {
+      if (inText) {
+        inText = false
+        if (textAcc.trim().length > 0) {
+          results.push(textAcc.trim())
+        }
+        textAcc = ''
+      }
+      continue
+    }
+
+    if (block.type === 'web_search_tool_result') {
+      // Handle error case
+      if (!Array.isArray(block.content)) {
+        const errorMessage = `Web search error: ${block.content.error_code}`
+        console.error(errorMessage)
+        results.push(errorMessage)
+        continue
+      }
+      // Success case - add results
+      const hits = block.content.map((r: any) => ({ title: r.title, url: r.url }))
+      results.push({
+        tool_use_id: block.tool_use_id,
+        content: hits,
+      })
+    }
+
+    if (block.type === 'text') {
+      if (inText) {
+        textAcc += block.text
+      } else {
+        inText = true
+        textAcc = block.text
+      }
+    }
+  }
+
+  if (textAcc.length) {
+    results.push(textAcc.trim())
+  }
+
+  return {
+    query,
+    results,
+    durationSeconds,
   }
 }
 
@@ -128,7 +117,7 @@ export const WebSearchTool = buildTool({
   shouldDefer: true,
   
   async description(input) {
-    return `Search the web for: ${input.query}`
+    return `Claude wants to search the web for: ${input.query}`
   },
   
   inputSchema,
@@ -168,7 +157,7 @@ export const WebSearchTool = buildTool({
     if (!query.length) {
       return {
         result: false,
-        message: 'Search query cannot be empty',
+        message: 'Error: Missing query',
         errorCode: 1,
       }
     }
@@ -176,7 +165,7 @@ export const WebSearchTool = buildTool({
     if (allowed_domains?.length && blocked_domains?.length) {
       return {
         result: false,
-        message: 'Cannot specify both allowed_domains and blocked_domains in the same request',
+        message: 'Error: Cannot specify both allowed_domains and blocked_domains in the same request',
         errorCode: 2,
       }
     }
@@ -186,7 +175,7 @@ export const WebSearchTool = buildTool({
   
   async call(input, context, onProgress) {
     const startTime = performance.now()
-    const { query, allowed_domains, blocked_domains, max_results } = input
+    const { query } = input
     
     onProgress?.({
       toolUseID: 'web-search',
@@ -197,41 +186,85 @@ export const WebSearchTool = buildTool({
     })
     
     try {
-      const searchResult = await performWebSearch(
-        query,
+      // Create user message
+      const userMessage = {
+        role: 'user' as const,
+        content: `Perform a web search for the query: ${query}`
+      }
+      
+      // Create tool schema
+      const toolSchema = {
+        name: 'web_search',
+        description: 'Search the web for current information',
+        parameters: {
+          type: 'object',
+          properties: {
+            query: {
+              type: 'string',
+              description: 'The search query to use'
+            },
+            allowed_domains: {
+              type: 'array',
+              items: {
+                type: 'string'
+              },
+              description: 'Only include search results from these domains'
+            },
+            blocked_domains: {
+              type: 'array',
+              items: {
+                type: 'string'
+              },
+              description: 'Never include search results from these domains'
+            }
+          },
+          required: ['query']
+        }
+      }
+      
+      // Import necessary modules
+      const { chatCompletionsWithTools } = await import('../handler.js')
+      
+      // Call LLM with web search tool
+      const response = await chatCompletionsWithTools(
+        context.config,
         {
-          allowedDomains: allowed_domains,
-          blockedDomains: blocked_domains,
-          maxResults: max_results,
-        },
-        context.abortController.signal
+          messages: [userMessage],
+          tools: [toolSchema],
+          temperature: 0.0,
+          onProgress: (event: any) => {
+            // Handle progress events
+            if (event.stage === 'tool_progress' && event.data?.type === 'search_results_received') {
+              onProgress?.({
+                toolUseID: event.data.toolId || 'web-search',
+                data: {
+                  type: 'search_results_received',
+                  query: event.data.query || query,
+                  resultCount: event.data.resultCount,
+                },
+              })
+            }
+          },
+          abortController: context.abortController,
+        }
       )
       
-      onProgress?.({
-        toolUseID: 'web-search',
-        data: {
-          type: 'search_results_received',
-          query,
-          resultCount: searchResult.results.length,
-        },
-      })
-      
+      // Process response
       const endTime = performance.now()
       const durationSeconds = (endTime - startTime) / 1000
       
-      const output: WebSearchOutput = {
-        query,
-        results: searchResult.results,
-        durationSeconds,
-        total_results: searchResult.totalResults,
-      }
+      // Extract content blocks from response
+      const contentBlocks = (response.raw as any)?.choices?.[0]?.message?.content || []
+      
+      // Format output
+      const output = makeOutputFromSearchResponse(contentBlocks, query, durationSeconds)
       
       onProgress?.({
         toolUseID: 'web-search',
         data: {
           type: 'search_complete',
           query,
-          resultCount: searchResult.results.length,
+          resultCount: output.results.length,
         },
       })
       
@@ -241,9 +274,8 @@ export const WebSearchTool = buildTool({
       
       const output: WebSearchOutput = {
         query,
-        results: [],
+        results: [`Error: ${message}`],
         durationSeconds: (performance.now() - startTime) / 1000,
-        total_results: 0,
       }
       
       return { data: output, error: message }

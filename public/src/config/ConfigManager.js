@@ -54,8 +54,10 @@ export class ConfigManager {
     try {
       localStorage.setItem(this.storageKey, JSON.stringify(this.config));
       this.notifyConfigChange();
+      return true;
     } catch (error) {
       console.error('Failed to save config:', error);
+      return false;
     }
   }
 

@@ -14,12 +14,34 @@ export class CommandProcessor {
 
   constructor() {
     this.agentManager = AgentManager.getInstance()
+    // 尝试从环境变量初始化ToolExecutor
+    this.tryInitializeToolExecutorFromEnv()
     this.setupCommands()
     this.setupTaskEventListeners()
   }
 
   setConfig(config: OpenAIConfig): void {
     this.toolExecutor = new ToolExecutor(config)
+    // 重新设置命令，确保ListToolsCommand使用新的toolExecutor
+    this.setupCommands()
+  }
+
+  private tryInitializeToolExecutorFromEnv(): void {
+    const apiKey = String(process.env.OPENAI_API_KEY || "").trim()
+    const baseUrl = String(process.env.OPENAI_BASE_URL || "").trim()
+    const model = String(process.env.OPENAI_MODEL || "").trim()
+    
+    if (apiKey && baseUrl && model) {
+      const config: OpenAIConfig = {
+        apiKey,
+        baseUrl,
+        model
+      }
+      this.toolExecutor = new ToolExecutor(config)
+      console.log('✅ ToolExecutor initialized from environment variables')
+    } else {
+      console.warn('⚠️  ToolExecutor not initialized - missing OpenAI configuration in environment variables')
+    }
   }
 
   private setupCommands(): void {

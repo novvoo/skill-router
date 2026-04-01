@@ -137,8 +137,12 @@ export class SettingsModule extends BaseModule {
       defaultHeaders: customHeaders
     };
     
-    this.config.saveConfig(newConfig);
-    this.showStatus('配置已保存到浏览器本地');
+    const success = this.config.saveConfig(newConfig);
+    if (success) {
+      this.showStatus('配置已保存到浏览器本地');
+    } else {
+      this.showStatus('保存配置失败，请检查浏览器存储权限', true);
+    }
   }
 
   clearConfig() {
@@ -150,18 +154,20 @@ export class SettingsModule extends BaseModule {
   }
 
   async testConnection() {
-    const config = this.config.getConfig();
+    const formData = this.getFormData('#config-form');
+    const { apiKey, baseUrl, model, systemContent } = formData;
     
-    if (!config.apiKey || !config.baseUrl || !config.model) {
-      this.showStatus('请先保存 API Key、Base URL 和 Model 再测试', true);
+    if (!apiKey || !baseUrl || !model) {
+      this.showStatus('请填写 API Key、Base URL 和 Model 再测试', true);
       return;
     }
 
     this.showLoading(true);
     try {
+      // 临时使用表单中的配置进行测试
       await this.api.post('/choose', {
         query: 'ping',
-        ...(config.systemContent && { systemContent: config.systemContent })
+        ...(systemContent && { systemContent })
       });
       
       this.showStatus('连接测试成功！后端可以使用当前配置调用模型');

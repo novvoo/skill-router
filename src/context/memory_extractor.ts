@@ -79,7 +79,14 @@ Example Output:
   if (!response) return;
   
   try {
-      const parsed = JSON.parse(response);
+      // Remove Markdown code block wrapper if present
+      let jsonString = response;
+      if (jsonString.startsWith('```json')) {
+          jsonString = jsonString.replace('```json', '').replace('```', '').trim();
+      } else if (jsonString.startsWith('```')) {
+          jsonString = jsonString.replace('```', '').replace('```', '').trim();
+      }
+      const parsed = JSON.parse(jsonString);
       if (Array.isArray(parsed.memories)) {
           for (const mem of parsed.memories) {
               if (mem.path && mem.content && mem.path.startsWith("/user/memories/")) {
