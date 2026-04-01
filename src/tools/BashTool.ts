@@ -252,7 +252,7 @@ export const BashTool = buildTool({
   async validateInput(input) {
     const { command, timeout } = input
     
-    if (!command.trim()) {
+    if (!command || typeof command !== 'string' || !command.trim()) {
       return {
         result: false,
         message: 'Command cannot be empty',

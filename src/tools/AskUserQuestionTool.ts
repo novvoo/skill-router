@@ -105,7 +105,7 @@ export const AskUserQuestionTool = buildTool({
   async validateInput(input) {
     const { question, timeout_seconds, options } = input
     
-    if (!question.trim()) {
+    if (!question || typeof question !== 'string' || !question.trim()) {
       return {
         result: false,
         message: 'Question cannot be empty',

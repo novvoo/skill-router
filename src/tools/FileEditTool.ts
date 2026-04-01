@@ -105,7 +105,7 @@ export const FileEditTool = buildTool({
   async validateInput(input) {
     const { path: filePath, old_str, new_str } = input
     
-    if (!filePath.trim()) {
+    if (!filePath || typeof filePath !== 'string' || !filePath.trim()) {
       return {
         result: false,
         message: 'File path cannot be empty',

@@ -97,6 +97,22 @@ class App {
         
         // Close mobile menu on navigation
         this.closeMobileMenu();
+        return;
+      }
+      
+      // Handle modal close buttons
+      if (e.target.classList.contains('modal-close')) {
+        const modal = e.target.closest('.modal');
+        if (modal) {
+          modal.style.display = 'none';
+        }
+        return;
+      }
+      
+      // Close modal when clicking backdrop
+      if (e.target.classList.contains('modal')) {
+        e.target.style.display = 'none';
+        return;
       }
     });
 
@@ -119,6 +135,16 @@ class App {
 
     // Handle keyboard shortcuts
     document.addEventListener('keydown', (e) => {
+      // ESC key closes modals
+      if (e.key === 'Escape') {
+        const openModal = document.querySelector('.modal[style*="display: block"], .modal[style*="display:block"]');
+        if (openModal) {
+          openModal.style.display = 'none';
+          e.preventDefault();
+          return;
+        }
+      }
+      
       if (e.ctrlKey || e.metaKey) {
         switch (e.key) {
           case '1':

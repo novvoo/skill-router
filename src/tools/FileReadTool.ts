@@ -192,4 +192,4 @@ export const FileReadTool = buildTool({
       return { data: output, error: message }
     }
   },
-} satisfies
+} satisfies ToolDef<typeof inputSchema, FileReadOutput>)

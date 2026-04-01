@@ -24,12 +24,6 @@ export class ToolModule extends BaseModule {
     // Execute tool modal buttons
     this.addEventListener('#execute-tool-btn', 'click', () => this.executeTool());
     this.addEventListener('#cancel-execute-btn', 'click', () => this.hideExecuteModal());
-    
-    // Close modals
-    this.addEventListener('.modal-close', 'click', (e) => {
-      const modal = e.target.closest('.modal');
-      if (modal) modal.style.display = 'none';
-    });
   }
 
   async loadTools() {
