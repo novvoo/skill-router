@@ -1,0 +1,82 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务管理 - Skill-Router</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .redirect-container {
+      text-align: center;
+      background: #1e293b;
+      padding: 40px;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      max-width: 500px;
+    }
+    .redirect-container h1 {
+      margin-bottom: 20px;
+      color: #3b82f6;
+    }
+    .redirect-container p {
+      margin-bottom: 30px;
+      color: #cbd5e1;
+      line-height: 1.6;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      background: #3b82f6;
+      color: white;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+    }
+    .btn:hover {
+      background: #2563eb;
+    }
+    .countdown {
+      margin-top: 20px;
+      color: #64748b;
+      font-size: 14px;
+    }
+  </style>
+</head>
+<body>
+  <div class="redirect-container">
+    <h1>🚀 任务管理</h1>
+    <p>任务管理功能已整合到主应用中，为您提供更好的用户体验。</p>
+    <p>您将在 <span id="countdown">3</span> 秒后自动跳转到主应用的任务页面。</p>
+    <a href="/index.html#/tasks" class="btn">立即跳转</a>
+    <div class="countdown">
+      或者您可以点击上方按钮立即跳转
+    </div>
+  </div>
+
+  <script>
+    let count = 3;
+    const countdownEl = document.getElementById('countdown');
+    
+    const timer = setInterval(() => {
+      count--;
+      countdownEl.textContent = count;
+      
+      if (count <= 0) {
+        clearInterval(timer);
+        window.location.href = '/index.html#/tasks';
+      }
+    }, 1000);
+  </script>
+</body>
+</html>

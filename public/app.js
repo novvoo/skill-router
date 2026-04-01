@@ -1,6 +1,7 @@
 import { marked } from "/vendor/marked/lib/marked.esm.js";
 import DOMPurify from "/vendor/dompurify/dist/purify.es.mjs";
 import hljs from "/vendor/highlight.js/es/common.js";
+import { toolProgressTracker } from "/src/utils/toolProgress.js";
 
 const KEY = "skill-router:openai";
 const SESSION_KEY = "skill-router:session_id";
@@ -695,6 +696,19 @@ async function sendChat() {
       progressState.lastAt = now;
       const stage = String(p?.stage || "").trim();
       const dataText = p && typeof p === "object" && "data" in p && p.data != null ? shortJson(p.data) : "";
+      
+      // Handle tool progress updates
+      if (stage === "tool_progress" && p.data && p.data.toolId && p.data.toolName) {
+        toolProgressTracker.onToolProgress({
+          toolId: p.data.toolId,
+          toolName: p.data.toolName,
+          status: p.data.status || 'executing',
+          stage: p.data.stage || 'tool_progress',
+          message: msg,
+          data: p.data
+        });
+      }
+      
       const extraParts = [
         stage ? `stage=${stage}` : "",
         Number.isFinite(deltaMs) && deltaMs > 0 ? `+${deltaMs}ms` : "",

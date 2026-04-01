@@ -1,0 +1,113 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skill-Router Test</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      margin: 40px;
+      background: #0f172a;
+      color: #f8fafc;
+    }
+    .test-section {
+      margin: 20px 0;
+      padding: 20px;
+      background: #1e293b;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+    .test-button {
+      background: #3b82f6;
+      color: white;
+      border: none;
+      padding: 8px 16px;
+      border-radius: 6px;
+      cursor: pointer;
+      margin: 5px;
+    }
+    .test-result {
+      margin-top: 10px;
+      padding: 10px;
+      background: #334155;
+      border-radius: 4px;
+      font-family: monospace;
+      font-size: 12px;
+    }
+    .success { color: #10b981; }
+    .error { color: #ef4444; }
+  </style>
+</head>
+<body>
+  <h1>Skill-Router 前端测试页面</h1>
+  
+  <div class="test-section">
+    <h2>API 连接测试</h2>
+    <button class="test-button" onclick="testApiConnection()">测试 API 连接</button>
+    <div id="api-result" class="test-result"></div>
+  </div>
+  
+  <div class="test-section">
+    <h2>模块加载测试</h2>
+    <button class="test-button" onclick="testModuleLoading()">测试模块加载</button>
+    <div id="module-result" class="test-result"></div>
+  </div>
+  
+  <div class="test-section">
+    <h2>新界面链接</h2>
+    <p>如果测试通过，可以访问新的界面：</p>
+    <a href="/index-new.html" style="color: #3b82f6; text-decoration: underline;">
+      打开新的 Skill-Router 界面
+    </a>
+  </div>
+
+  <script type="module">
+    // Test API connection
+    window.testApiConnection = async function() {
+      const result = document.getElementById('api-result');
+      result.innerHTML = '测试中...';
+      
+      try {
+        const response = await fetch('/skills');
+        if (response.ok) {
+          const data = await response.json();
+          result.innerHTML = `<span class="success">✅ API 连接成功</span><br>Skills: ${data.skills?.length || 0} 个`;
+        } else {
+          result.innerHTML = `<span class="error">❌ API 响应错误: ${response.status}</span>`;
+        }
+      } catch (error) {
+        result.innerHTML = `<span class="error">❌ API 连接失败: ${error.message}</span>`;
+      }
+    };
+
+    // Test module loading
+    window.testModuleLoading = async function() {
+      const result = document.getElementById('module-result');
+      result.innerHTML = '测试中...';
+      
+      try {
+        // Test if we can import our modules
+        const { ConfigManager } = await import('./src/config/ConfigManager.js');
+        const { ApiClient } = await import('./src/api/ApiClient.js');
+        const { Router } = await import('./src/router.js');
+        
+        // Test basic functionality
+        const config = new ConfigManager();
+        const api = new ApiClient(config);
+        const router = new Router();
+        
+        result.innerHTML = `
+          <span class="success">✅ 模块加载成功</span><br>
+          - ConfigManager: ✅<br>
+          - ApiClient: ✅<br>
+          - Router: ✅<br>
+          - Session ID: ${config.getSessionId()}
+        `;
+      } catch (error) {
+        result.innerHTML = `<span class="error">❌ 模块加载失败: ${error.message}</span>`;
+      }
+    };
+  </script>
+</body>
+</html>

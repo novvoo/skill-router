@@ -4,9 +4,18 @@
   "type": "module",
   "scripts": {
     "dev": "tsx scripts/build-vendor.ts && tsx watch src/index.ts",
+    "dev:terminal": "tsx scripts/build-vendor.ts && tsx src/index.ts --terminal",
+    "dev:coordinator": "tsx scripts/build-vendor.ts && tsx src/index.ts --terminal --coordinator",
     "build": "tsc -p tsconfig.json",
+    "build:frontend": "npm run build:vendor",
     "start": "node dist/index.js",
+    "start:terminal": "node dist/index.js --terminal",
+    "start:coordinator": "node dist/index.js --terminal --coordinator",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test:agents": "tsx scripts/test-agents.ts",
+    "test:system": "node test-system.js",
+    "test:tasks": "npm run build && node test-tasks.js",
+    "terminal": "npm run build && npm run start:terminal",
     "smoke": "tsx scripts/smoke.ts",
     "smoke:memory-timeout": "tsx scripts/memory-timeout-smoke.ts",
     "smoke:sse": "tsx scripts/sse-smoke.ts",
@@ -19,7 +28,8 @@
     "dompurify": "^3.2.7",
     "highlight.js": "^11.11.1",
     "marked": "^15.0.7",
-    "onnxruntime-node": "^1.24.3"
+    "onnxruntime-node": "^1.24.3",
+    "zod": "^3.25.76"
   },
   "devDependencies": {
     "@types/busboy": "^1.5.4",

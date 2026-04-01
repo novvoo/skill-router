@@ -1,400 +1,404 @@
-<!doctype html>
+<!DOCTYPE html>
 <html lang="zh-CN">
-  <head>
-    <meta charset="utf-8" />
-    <meta name="viewport" content="width=device-width, initial-scale=1" />
-    <title>skill-router</title>
-    <link rel="stylesheet" href="/vendor/highlight.js/styles/github-dark.css" />
-    <style>
-      :root {
-        color-scheme: dark;
-        --mui-font: Roboto, system-ui, -apple-system, Segoe UI, Helvetica, Arial, "Apple Color Emoji", "Segoe UI Emoji";
-        --mui-bg: #121212;
-        --mui-paper: #1e1e1e;
-        --mui-paper-2: #242424;
-        --mui-divider: rgba(255, 255, 255, 0.12);
-        --mui-outline: rgba(255, 255, 255, 0.23);
-        --mui-text: rgba(255, 255, 255, 0.87);
-        --mui-text-2: rgba(255, 255, 255, 0.7);
-        --mui-text-3: rgba(255, 255, 255, 0.5);
-        --mui-primary: #1976d2;
-        --mui-primary-2: #1565c0;
-        --mui-primary-contrast: #ffffff;
-        --mui-action-hover: rgba(255, 255, 255, 0.08);
-        --mui-action-focus: rgba(255, 255, 255, 0.12);
-        --mui-field-bg: rgba(255, 255, 255, 0.06);
-        --mui-field-bg-hover: rgba(255, 255, 255, 0.08);
-        --mui-error: #d32f2f;
-        --mui-success: #2e7d32;
-        --mui-radius: 8px;
-        --mui-radius-2: 12px;
-        --mui-shadow-1: 0px 2px 1px -1px rgba(0,0,0,0.2), 0px 1px 1px 0px rgba(0,0,0,0.14), 0px 1px 3px 0px rgba(0,0,0,0.12);
-        --mui-shadow-2: 0px 3px 1px -2px rgba(0,0,0,0.2), 0px 2px 2px 0px rgba(0,0,0,0.14), 0px 1px 5px 0px rgba(0,0,0,0.12);
-        --mui-shadow-3: 0px 3px 3px -2px rgba(0,0,0,0.2), 0px 3px 4px 0px rgba(0,0,0,0.14), 0px 1px 8px 0px rgba(0,0,0,0.12);
-      }
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Skill-Router</title>
+  <link rel="stylesheet" href="/vendor/highlight.js/styles/github-dark.css">
+  <link rel="stylesheet" href="/styles/main.css">
+</head>
+<body>
+  <!-- Mobile Menu Toggle -->
+  <button class="mobile-menu-toggle" id="mobile-menu-toggle">
+    <span class="nav-icon">☰</span>
+  </button>
 
-      * { box-sizing: border-box; }
-
-      body {
-        font-family: var(--mui-font);
-        font-size: 14px;
-        line-height: 1.5;
-        margin: 0;
-        background: var(--mui-bg);
-        color: var(--mui-text);
-      }
-      .wrap { max-width: 1040px; margin: 0 auto; padding: 28px 18px 44px; }
-      h1 { font-size: 20px; font-weight: 600; margin: 0 0 18px; letter-spacing: 0.1px; }
-      .grid { display: grid; grid-template-columns: 1fr; gap: 16px; }
-      @media (min-width: 860px) { .grid { grid-template-columns: 1fr 1fr; } }
-      .card { background: var(--mui-paper); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 16px; box-shadow: var(--mui-shadow-1); }
-      .card:hover { box-shadow: var(--mui-shadow-2); }
-      .card h2 { font-size: 14px; font-weight: 600; margin: 0 0 12px; color: var(--mui-text); letter-spacing: 0.12px; }
-      label { display: block; font-size: 12px; color: var(--mui-text-2); margin-bottom: 6px; }
-      input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select {
-        width: 100%;
-        background: var(--mui-field-bg);
-        color: var(--mui-text);
-        border: 1px solid var(--mui-outline);
-        border-radius: 6px;
-        padding: 10px 14px;
-        outline: none;
-        transition: border-color 120ms ease, box-shadow 120ms ease, background 120ms ease;
-      }
-      input[type="checkbox"], input[type="radio"] {
-        width: 16px;
-        height: 16px;
-        accent-color: var(--mui-primary);
-      }
-      select { background: var(--mui-field-bg); }
-      select:hover { background: var(--mui-field-bg-hover); }
-      select:focus { background: var(--mui-field-bg-hover); }
-      select option { background: #141414; color: var(--mui-text); }
-      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], textarea)::placeholder { color: rgba(255, 255, 255, 0.45); }
-      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):hover { border-color: rgba(255, 255, 255, 0.38); }
-      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):focus { border-color: var(--mui-primary); box-shadow: 0 0 0 2px rgba(25, 118, 210, 0.28); }
-      :is(input[type="text"], input[type="password"], input[type="url"], input[type="email"], input[type="number"], input[type="search"], input[type="file"], textarea, select):focus-visible { outline: 0; }
-      textarea { min-height: 132px; resize: vertical; }
-      input[type="file"] { padding: 8px 10px; }
-      .row { display: grid; grid-template-columns: 1fr; gap: 12px; }
-      @media (min-width: 560px) { .row { grid-template-columns: 1fr 1fr; } }
-      .btns { display: flex; gap: 10px; flex-wrap: wrap; margin-top: 12px; }
-      button {
-        background: var(--mui-primary);
-        border: 0;
-        color: var(--mui-primary-contrast);
-        border-radius: 8px;
-        padding: 8px 16px;
-        cursor: pointer;
-        font-weight: 500;
-        letter-spacing: 0.35px;
-        min-height: 36px;
-        box-shadow: var(--mui-shadow-2);
-        transition: background 120ms ease, box-shadow 120ms ease, transform 80ms ease, border-color 120ms ease;
-      }
-      button:hover { background: var(--mui-primary-2); box-shadow: var(--mui-shadow-3); }
-      button:active { transform: translateY(0.5px); }
-      button:disabled { opacity: 0.5; cursor: not-allowed; box-shadow: none; }
-      button.secondary {
-        background: transparent;
-        color: var(--mui-text);
-        border: 1px solid var(--mui-outline);
-        box-shadow: none;
-      }
-      button.secondary:hover { background: var(--mui-action-hover); border-color: rgba(255, 255, 255, 0.35); box-shadow: none; }
-      button:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
-      .hint { font-size: 12px; color: var(--mui-text-3); line-height: 1.4; }
-      pre { background: rgba(255, 255, 255, 0.04); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 12px; overflow: auto; margin: 12px 0 0; }
-      .ok { color: #81c784; }
-      .err { color: #e57373; }
-      .vHidden { display: none !important; }
-      .hdrTable { width: 100%; border-collapse: separate; border-spacing: 0; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); overflow: hidden; }
-      .hdrTable th, .hdrTable td { padding: 8px; border-bottom: 1px solid var(--mui-divider); vertical-align: top; }
-      .hdrTable th { text-align: left; font-size: 12px; color: var(--mui-text-2); font-weight: 600; background: rgba(255, 255, 255, 0.03); }
-      .hdrTable tr:last-child td { border-bottom: 0; }
-      .hdrTable input { padding: 9px 10px; border-radius: 6px; }
-      .hdrRmBtn { width: 34px; height: 34px; padding: 0; border-radius: 999px; display: inline-flex; align-items: center; justify-content: center; }
-      .hdrRmBtn.secondary { border-color: rgba(255, 255, 255, 0.18); }
-      .skillsTable th, .skillsTable td { padding: 6px 8px; font-size: 11px; line-height: 1.25; }
-      .skillsTable th { font-size: 11px; }
-      .pill { display: inline-flex; align-items: center; gap: 6px; padding: 2px 8px; border-radius: 999px; border: 1px solid rgba(255, 255, 255, 0.16); font-size: 11px; line-height: 1.6; }
-      .muted { color: rgba(255, 255, 255, 0.45); }
-      .warn { color: #ffb74d; }
-
-      .app { min-height: 100vh; display: flex; flex-direction: column; }
-      .appbar {
-        position: sticky;
-        top: 0;
-        z-index: 5;
-        display: flex;
-        align-items: center;
-        gap: 10px;
-        padding: 12px 14px;
-        background: rgba(18, 18, 18, 0.72);
-        backdrop-filter: blur(10px);
-        border-bottom: 1px solid var(--mui-divider);
-      }
-      .title { font-size: 16px; font-weight: 650; letter-spacing: 0.1px; }
-      .spacer { flex: 1; }
-      .iconBtn {
-        width: 40px;
-        height: 40px;
-        border-radius: 999px;
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        background: transparent;
-        border: 1px solid var(--mui-outline);
-        color: var(--mui-text);
-        cursor: pointer;
-        box-shadow: none;
-      }
-      .iconBtn:hover { background: var(--mui-action-hover); border-color: rgba(255, 255, 255, 0.28); }
-      .iconBtn:active { transform: translateY(0.5px); }
-      .iconBtn:focus-visible { outline: 0; box-shadow: 0 0 0 3px rgba(25, 118, 210, 0.28); }
-
-      .main { flex: 1; }
-      .page { max-width: 1040px; margin: 0 auto; padding: 16px 18px 28px; }
-
-      .chatShell { display: flex; flex-direction: column; gap: 12px; min-height: calc(100vh - 72px); }
-      .chatMessages {
-        flex: 1;
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        padding: 14px;
-        background: var(--mui-paper);
-        border: 1px solid var(--mui-divider);
-        border-radius: var(--mui-radius-2);
-        overflow: auto;
-      }
-      .chatMessages:empty::before {
-        content: "开始一段对话吧：输入问题，或上传文档作为参考。";
-        color: rgba(255, 255, 255, 0.45);
-        font-size: 13px;
-        line-height: 1.6;
-        padding: 10px 6px;
-      }
-      .chatMessages::-webkit-scrollbar { width: 10px; height: 10px; }
-      .chatMessages::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.16); border-radius: 999px; border: 2px solid transparent; background-clip: padding-box; }
-      .chatMessages::-webkit-scrollbar-thumb:hover { background: rgba(255, 255, 255, 0.24); border: 2px solid transparent; background-clip: padding-box; }
-      .msg { display: flex; }
-      .msg.user { justify-content: flex-end; }
-      .msg.assistant { justify-content: flex-start; }
-      .msgCol { display: flex; flex-direction: column; gap: 6px; align-items: flex-start; }
-      .msg.user .msgCol { align-items: flex-end; }
-      .bubble {
-        max-width: min(720px, 92%);
-        padding: 10px 12px;
-        border-radius: 14px;
-        border: 1px solid var(--mui-divider);
-        background: rgba(255, 255, 255, 0.03);
-        white-space: normal;
-        word-break: break-word;
-        line-height: 1.55;
-      }
-      .bubble :first-child { margin-top: 0; }
-      .bubble :last-child { margin-bottom: 0; }
-      .bubble p { margin: 0 0 10px; }
-      .bubble ul, .bubble ol { margin: 8px 0 8px 20px; padding: 0; }
-      .bubble li { margin: 4px 0; }
-      .bubble a { color: #90caf9; text-decoration: underline; }
-      .bubble blockquote {
-        margin: 10px 0;
-        padding: 8px 12px;
-        border-left: 3px solid rgba(144, 202, 249, 0.45);
-        background: rgba(255, 255, 255, 0.03);
-        border-radius: 10px;
-      }
-      .bubble code {
-        font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-        font-size: 12.5px;
-        background: rgba(0, 0, 0, 0.22);
-        border: 1px solid rgba(255, 255, 255, 0.10);
-        padding: 0 6px;
-        border-radius: 8px;
-      }
-      .bubble pre {
-        margin: 10px 0;
-        padding: 12px;
-        background: rgba(0, 0, 0, 0.30);
-        border: 1px solid var(--mui-divider);
-        border-radius: 12px;
-        overflow: auto;
-      }
-      .bubble pre code {
-        display: block;
-        background: transparent;
-        border: 0;
-        padding: 0;
-        border-radius: 0;
-        font-size: 12.5px;
-        line-height: 1.6;
-      }
-      .bubble hr { border: 0; border-top: 1px solid var(--mui-divider); margin: 12px 0; }
-      .bubble table { width: 100%; border-collapse: collapse; margin: 10px 0; font-size: 13px; }
-      .bubble th, .bubble td { border: 1px solid var(--mui-divider); padding: 6px 8px; vertical-align: top; }
-      .bubble th { background: rgba(255, 255, 255, 0.04); font-weight: 600; }
-      .mdPreview {
-        margin-top: 10px;
-        padding: 10px 12px;
-        border-radius: 8px;
-        border: 1px solid var(--mui-divider);
-        background: rgba(255, 255, 255, 0.02);
-      }
-      .msg.assistant .bubble {
-        background: linear-gradient(180deg, rgba(255, 255, 255, 0.05), rgba(255, 255, 255, 0.03));
-      }
-      .msg.user .bubble {
-        background: linear-gradient(180deg, rgba(25, 118, 210, 0.22), rgba(25, 118, 210, 0.14));
-        border-color: rgba(25, 118, 210, 0.38);
-      }
-      .metaLine { font-size: 12px; color: rgba(255, 255, 255, 0.50); }
-      .msg.user .metaLine { text-align: right; }
-
-      .composer { padding: 14px; border: 1px solid var(--mui-divider); border-radius: var(--mui-radius-2); background: rgba(30, 30, 30, 0.92); backdrop-filter: blur(8px); box-shadow: var(--mui-shadow-1); }
-      .composer textarea { min-height: 86px; }
-      .attachRow { display: grid; grid-template-columns: 1fr; gap: 12px; margin-top: 12px; }
-      @media (min-width: 700px) { .attachRow { grid-template-columns: 1fr 1fr; } }
-
-      .backdrop {
-        position: fixed;
-        inset: 0;
-        background: rgba(0, 0, 0, 0.56);
-        z-index: 10;
-        opacity: 1;
-        transition: opacity 120ms ease;
-      }
-      .backdrop.hidden { opacity: 0; pointer-events: none; }
-      .drawer {
-        position: fixed;
-        top: 0;
-        left: 0;
-        bottom: 0;
-        width: min(420px, 92vw);
-        background: var(--mui-paper);
-        border-right: 1px solid var(--mui-divider);
-        z-index: 11;
-        transform: translateX(0);
-        transition: transform 160ms ease;
-        display: flex;
-        flex-direction: column;
-      }
-      .drawer.hidden { transform: translateX(-104%); }
-      .drawerHeader { display: flex; align-items: center; gap: 10px; padding: 12px 14px; border-bottom: 1px solid var(--mui-divider); }
-      .drawerTitle { font-size: 14px; font-weight: 600; }
-      .drawerBody { padding: 14px; overflow: auto; display: flex; flex-direction: column; gap: 14px; }
-      .section { background: var(--mui-paper-2); border: 1px solid var(--mui-divider); border-radius: var(--mui-radius); padding: 14px; }
-      .sectionTitle { font-size: 13px; font-weight: 600; margin: 0 0 10px; color: var(--mui-text); }
-      .memTree { font-size: 12px; margin-top: 10px; border: 1px solid var(--mui-divider); border-radius: 8px; overflow: hidden; }
-      .memNode { padding: 6px 8px; border-bottom: 1px solid var(--mui-divider); display: flex; align-items: center; justify-content: space-between; gap: 8px; }
-      .memNode:last-child { border-bottom: 0; }
-      .memNode:hover { background: rgba(255, 255, 255, 0.03); }
-      .memPath { flex: 1; word-break: break-all; font-family: monospace; }
-      .memMeta { color: var(--mui-text-3); font-size: 11px; }
-      .memActions { display: flex; gap: 4px; }
-      .memBtn { padding: 2px 6px; font-size: 10px; height: 20px; min-height: 0; }
-      .trajectory { margin-top: 6px; padding: 8px; background: rgba(0, 0, 0, 0.2); border-radius: 8px; font-size: 11px; font-family: monospace; color: var(--mui-text-2); display: none; }
-      .trajectory.show { display: block; }
-      .trajBtn { font-size: 11px; padding: 2px 8px; height: 24px; margin-left: 8px; background: rgba(255, 255, 255, 0.08); border: 0; color: var(--mui-text-2); border-radius: 4px; cursor: pointer; }
-      .trajBtn:hover { background: rgba(255, 255, 255, 0.12); }
-      .progressBox { margin-top: 6px; padding: 8px; background: rgba(0, 0, 0, 0.2); border-radius: 8px; font-size: 11px; font-family: monospace; color: var(--mui-text-2); display: none; }
-      .progressBtn { font-size: 11px; padding: 2px 8px; height: 24px; margin-left: 8px; background: rgba(255, 255, 255, 0.08); border: 0; color: var(--mui-text-2); border-radius: 4px; cursor: pointer; }
-      .progressBtn:hover { background: rgba(255, 255, 255, 0.12); }
-    </style>
-  </head>
-  <body>
-    <div class="app">
-      <header class="appbar">
-        <button id="menuBtn" class="iconBtn" aria-label="menu">≡</button>
-        <div class="title">skill-router</div>
-        <div class="spacer"></div>
-        <button id="newChatBtn" class="secondary">新对话</button>
-      </header>
-
-      <main class="main">
-        <div class="page">
-          <div class="chatShell">
-            <div id="chatMessages" class="chatMessages" aria-label="messages"></div>
-            <div class="composer">
-              <label>输入</label>
-              <textarea id="chatInput" placeholder="描述你的任务…"></textarea>
-              <div id="chatPreview" class="mdPreview vHidden" aria-label="preview" aria-hidden="true"></div>
-              <div class="attachRow">
-                <div>
-                  <label>文档（可选，可多选）</label>
-                  <input id="chatDocFile" type="file" multiple />
-                </div>
-              </div>
-              <div class="btns">
-                <button id="chatSend">发送</button>
-                <button id="chatPreviewBtn" class="secondary" aria-pressed="false" aria-controls="chatPreview">预览</button>
-              </div>
-              <div id="chatHint" class="hint" style="margin-top: 8px;"></div>
-            </div>
-          </div>
-        </div>
-      </main>
-    </div>
-
-    <div id="drawerBackdrop" class="backdrop hidden"></div>
-    <aside id="drawer" class="drawer hidden" aria-label="menu">
-      <div class="drawerHeader">
-        <div class="drawerTitle">菜单</div>
-        <div class="spacer"></div>
-        <button id="drawerClose" class="iconBtn" aria-label="close">×</button>
+  <div class="app">
+    <!-- Navigation -->
+    <nav class="navbar" id="navbar">
+      <div class="nav-brand">
+        <h1>Skill-Router</h1>
       </div>
-      <div class="drawerBody">
+      <div class="nav-menu">
+        <a href="#" class="nav-item active" data-route="chat">
+          <span class="nav-icon">💬</span>
+          <span class="nav-text">对话</span>
+          <span class="nav-shortcut">Ctrl+1</span>
+        </a>
+        <a href="#" class="nav-item" data-route="agents">
+          <span class="nav-icon">🤖</span>
+          <span class="nav-text">Agent</span>
+          <span class="nav-shortcut">Ctrl+2</span>
+        </a>
+        <a href="#" class="nav-item" data-route="tools">
+          <span class="nav-icon">🔧</span>
+          <span class="nav-text">工具</span>
+          <span class="nav-shortcut">Ctrl+3</span>
+        </a>
+        <a href="#" class="nav-item" data-route="tasks">
+          <span class="nav-icon">📋</span>
+          <span class="nav-text">任务</span>
+          <span class="nav-shortcut">Ctrl+4</span>
+        </a>
+        <a href="#" class="nav-item" data-route="memory">
+          <span class="nav-icon">🧠</span>
+          <span class="nav-text">记忆</span>
+          <span class="nav-shortcut">Ctrl+5</span>
+        </a>
+        <a href="#" class="nav-item" data-route="settings">
+          <span class="nav-icon">⚙️</span>
+          <span class="nav-text">设置</span>
+          <span class="nav-shortcut">Ctrl+6</span>
+        </a>
+        <a href="#" class="nav-item" data-route="terminal">
+          <span class="nav-icon">💻</span>
+          <span class="nav-text">终端</span>
+          <span class="nav-shortcut">Ctrl+7</span>
+        </a>
+      </div>
+    </nav>
+
+    <!-- Main Content -->
+    <main class="main-content">
+      <!-- Chat Page -->
+      <div id="chat-page" class="page">
+        <div class="page-header">
+          <h2>智能对话</h2>
+          <button id="new-chat-btn" class="btn-secondary">新对话</button>
+        </div>
+        
+        <div class="chat-container">
+          <div id="chat-messages" class="chat-messages"></div>
+          
+          <div class="chat-input-container">
+            <div class="input-group">
+              <label for="chat-input">输入消息</label>
+              <textarea id="chat-input" placeholder="描述你的任务..." rows="3"></textarea>
+              <div id="chat-preview" class="preview-area" style="display: none;"></div>
+            </div>
+            
+            <div class="input-group">
+              <label for="chat-file-input">文档（可选）</label>
+              <input id="chat-file-input" type="file" multiple>
+            </div>
+            
+            <div class="input-actions">
+              <button id="chat-send" class="btn-primary">发送</button>
+              <button id="chat-preview-btn" class="btn-secondary">预览</button>
+            </div>
+            
+            <div class="status-message"></div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Agents Page -->
+      <div id="agents-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>Agent 管理</h2>
+          <div class="page-actions">
+            <button id="refresh-agents" class="btn-secondary">刷新</button>
+            <button id="create-agent-btn" class="btn-primary">创建Agent</button>
+          </div>
+        </div>
+
+        <!-- Create Agent Form -->
+        <div id="create-agent-form" class="form-section" style="display: none;">
+          <h3>创建新Agent</h3>
+          <form>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="agentType">Agent类型</label>
+                <select name="agentType" id="agentType">
+                  <option value="general">General (通用)</option>
+                  <option value="researcher">Researcher (研究)</option>
+                  <option value="coder">Coder (编程)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="description">任务描述</label>
+                <input name="description" type="text" placeholder="简短描述任务...">
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label for="prompt">详细任务</label>
+              <textarea name="prompt" placeholder="详细描述你希望Agent执行的任务..." rows="4"></textarea>
+            </div>
+            
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input name="background" type="checkbox">
+                <span>后台运行</span>
+              </label>
+            </div>
+            
+            <div class="form-actions">
+              <button id="spawn-agent-btn" type="button" class="btn-primary">启动Agent</button>
+              <button id="cancel-agent-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- Available Agents -->
         <div class="section">
-          <div class="sectionTitle">本地配置（浏览器保存）</div>
-          <div class="row">
-            <div>
-              <label>OPENAI_API_KEY</label>
-              <input id="apiKey" type="password" autocomplete="off" placeholder="sk-..." />
-            </div>
-            <div>
-              <label>OPENAI_MODEL</label>
-              <input id="model" type="text" autocomplete="off" placeholder="gpt-4.1-mini" />
-            </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <label>OPENAI_BASE_URL</label>
-            <input id="baseUrl" type="text" autocomplete="off" placeholder="https://api.openai.com/v1" />
-          </div>
-          <div style="margin-top: 10px;">
-            <label>CUSTOM_HEADERS (optional)</label>
-            <table class="hdrTable" aria-label="custom headers">
-              <thead>
-                <tr>
-                  <th style="width: 44%;">Header</th>
-                  <th style="width: 44%;">Value</th>
-                  <th style="width: 12%;"></th>
-                </tr>
-              </thead>
-              <tbody id="customHeadersBody"></tbody>
-            </table>
-            <div class="btns" style="margin-top: 10px;">
-              <button id="addCustomHeader" class="secondary" type="button">添加 Header</button>
-            </div>
-          </div>
-          <div style="margin-top: 10px;">
-            <label>OPENAI_SYSTEM_CONTENT (optional)</label>
-            <textarea id="systemContent" placeholder="You are a helpful assistant..." style="min-height: 80px;"></textarea>
-          </div>
-          <div class="btns">
-            <button id="saveCfg">保存到浏览器本地</button>
-            <button id="clearCfg" class="secondary">清空本地配置</button>
-            <button id="checkCfg" class="secondary">连通性自检</button>
-          </div>
-          <div id="cfgStatus" class="hint" style="margin-top: 8px;"></div>
+          <h3>可用Agent类型</h3>
+          <div id="agents-list" class="cards-grid"></div>
+        </div>
+
+        <!-- Running Agents -->
+        <div class="section">
+          <h3>运行中的Agent</h3>
+          <div id="running-agents-list" class="list-container"></div>
+        </div>
+
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+      </div>
+
+      <!-- Tools Page -->
+      <div id="tools-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>工具管理</h2>
+          <button id="refresh-tools" class="btn-secondary">刷新</button>
         </div>
 
         <div class="section">
-          <div class="sectionTitle">Embeddings (Kreuzberg) 下载</div>
-          <div class="row">
-            <div>
-              <label>EMBEDDING_MODEL</label>
-              <select id="embeddingModel" autocomplete="off">
+          <h3>可用工具</h3>
+          <div id="tools-list" class="cards-grid"></div>
+        </div>
+
+        <div class="section">
+          <h3>执行历史</h3>
+          <div id="execution-history-list" class="list-container"></div>
+        </div>
+
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+
+        <!-- Tool Execute Modal -->
+        <div id="execute-tool-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3 id="execute-tool-title">执行工具</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="tool-execute-form">
+                <div id="tool-params-container"></div>
+                <div class="form-actions">
+                  <button id="execute-tool-btn" type="button" class="btn-primary">执行</button>
+                  <button id="cancel-execute-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Tool Result Modal -->
+        <div id="tool-result-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>工具执行结果</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <div id="tool-result-content"></div>
+            </div>
+          </div>
+        </div>
+
+        <!-- History Detail Modal -->
+        <div id="history-detail-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>执行历史详情</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <div id="history-detail-content"></div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Tasks Page -->
+      <div id="tasks-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>任务管理</h2>
+          <div class="page-actions">
+            <button id="refresh-tasks" class="btn-secondary">刷新</button>
+            <button id="create-task-btn" class="btn-primary">创建任务</button>
+          </div>
+        </div>
+
+        <!-- 任务统计 -->
+        <div class="section">
+          <div id="task-stats" class="stats-grid"></div>
+        </div>
+
+        <!-- 创建任务表单 -->
+        <div id="create-task-form" class="form-section" style="display: none;">
+          <h3>创建新任务</h3>
+          <form>
+            <div class="form-row">
+              <div class="form-group">
+                <label for="task-type">任务类型</label>
+                <select id="task-type" name="taskType">
+                  <option value="agent">Agent任务</option>
+                  <option value="shell">Shell任务</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="task-priority">优先级</label>
+                <select id="task-priority" name="priority">
+                  <option value="normal">普通</option>
+                  <option value="high">高</option>
+                  <option value="low">低</option>
+                </select>
+              </div>
+            </div>
+
+            <div id="agent-fields">
+              <div class="form-group">
+                <label for="agent-type">Agent类型</label>
+                <select id="agent-type" name="agentType">
+                  <option value="general">General (通用)</option>
+                  <option value="researcher">Researcher (研究)</option>
+                  <option value="coder">Coder (编程)</option>
+                </select>
+              </div>
+              <div class="form-group">
+                <label for="agent-prompt">任务提示词</label>
+                <textarea id="agent-prompt" name="agentPrompt" placeholder="描述你希望Agent执行的任务..." rows="4"></textarea>
+              </div>
+            </div>
+
+            <div id="shell-fields" style="display: none;">
+              <div class="form-group">
+                <label for="shell-command">Shell命令</label>
+                <input type="text" id="shell-command" name="shellCommand" placeholder="输入要执行的命令...">
+              </div>
+            </div>
+
+            <div class="form-group">
+              <label for="task-description">任务描述</label>
+              <input type="text" id="task-description" name="description" placeholder="简短描述这个任务...">
+            </div>
+
+            <div class="form-group">
+              <label class="checkbox-label">
+                <input type="checkbox" id="task-background" name="background">
+                <span>后台运行</span>
+              </label>
+            </div>
+
+            <div class="form-actions">
+              <button id="submit-task-btn" type="button" class="btn-primary">创建任务</button>
+              <button id="cancel-task-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+
+        <!-- 任务过滤 -->
+        <div class="section">
+          <div class="filter-buttons">
+            <button class="filter-btn active" data-filter="all">全部</button>
+            <button class="filter-btn" data-filter="running">运行中</button>
+            <button class="filter-btn" data-filter="completed">已完成</button>
+            <button class="filter-btn" data-filter="failed">失败</button>
+            <button class="filter-btn" data-filter="killed">已终止</button>
+          </div>
+        </div>
+
+        <!-- 任务列表 -->
+        <div class="section">
+          <h3>任务列表</h3>
+          <div id="task-list" class="list-container"></div>
+        </div>
+
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+      </div>
+
+      <!-- Memory Page -->
+      <div id="memory-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>记忆管理</h2>
+          <button id="refresh-memories" class="btn-secondary">刷新</button>
+        </div>
+
+        <div class="section">
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input id="memory-enabled" type="checkbox" checked>
+              <span>启用上下文/记忆检索</span>
+            </label>
+          </div>
+        </div>
+
+        <div class="section">
+          <h3>记忆树</h3>
+          <div id="memory-tree" class="list-container"></div>
+        </div>
+
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+      </div>
+
+      <!-- Settings Page -->
+      <div id="settings-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>系统设置</h2>
+        </div>
+
+        <!-- OpenAI Configuration -->
+        <div class="section">
+          <h3>OpenAI 配置</h3>
+          <form id="config-form">
+            <div class="form-row">
+              <div class="form-group">
+                <label for="apiKey">API Key</label>
+                <input name="apiKey" type="password" placeholder="sk-...">
+              </div>
+              <div class="form-group">
+                <label for="model">模型</label>
+                <input name="model" type="text" placeholder="gpt-4-turbo">
+              </div>
+            </div>
+            
+            <div class="form-group">
+              <label for="baseUrl">Base URL</label>
+              <input name="baseUrl" type="text" placeholder="https://api.openai.com/v1">
+            </div>
+            
+            <div class="form-group">
+              <label for="systemContent">系统提示词（可选）</label>
+              <textarea name="systemContent" placeholder="You are a helpful assistant..." rows="3"></textarea>
+            </div>
+          </form>
+          
+          <!-- Custom Headers -->
+          <div class="subsection">
+            <h4>自定义请求头</h4>
+            <div id="custom-headers-container"></div>
+            <button id="add-header" type="button" class="btn-secondary">添加Header</button>
+          </div>
+          
+          <div class="form-actions">
+            <button id="save-config" class="btn-primary">保存配置</button>
+            <button id="clear-config" class="btn-secondary">清空配置</button>
+            <button id="test-connection" class="btn-secondary">测试连接</button>
+          </div>
+        </div>
+
+        <!-- Embedding Configuration -->
+        <div class="section">
+          <h3>嵌入模型配置</h3>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="embeddingModel">嵌入模型</label>
+              <select name="embeddingModel">
                 <option value="">(跟随服务端默认)</option>
                 <option value="fast">fast (Kreuzberg preset)</option>
                 <option value="balanced">balanced (Kreuzberg preset)</option>
@@ -403,112 +407,91 @@
                 <option value="compact">compact (Kreuzberg preset)</option>
                 <option value="large">large (Kreuzberg preset)</option>
                 <option value="accurate">accurate (Kreuzberg preset)</option>
-                <option value="text-embedding-3-small">text-embedding-3-small (OpenAI compatible)</option>
-                <option value="text-embedding-3-large">text-embedding-3-large (OpenAI compatible)</option>
+                <option value="text-embedding-3-small">text-embedding-3-small (OpenAI)</option>
+                <option value="text-embedding-3-large">text-embedding-3-large (OpenAI)</option>
               </select>
             </div>
-            <div>
-              <label>HF_ENDPOINT</label>
-              <select id="hfEndpoint" autocomplete="off">
+            <div class="form-group">
+              <label for="hfEndpoint">HuggingFace 端点</label>
+              <select name="hfEndpoint">
                 <option value="">(跟随服务端默认)</option>
                 <option value="https://huggingface.co">huggingface.co</option>
                 <option value="https://hf-mirror.com">hf-mirror.com</option>
               </select>
             </div>
           </div>
-          <div class="btns">
-            <button id="refreshEmbeddings" class="secondary">刷新状态</button>
-          </div>
-          <div id="embeddingsHint" class="hint" style="margin-top: 8px;"></div>
-          <div id="embeddingsList" class="memTree" style="margin-top: 10px;"></div>
+          
+          <button id="refresh-embeddings" class="btn-secondary">刷新状态</button>
+          <div id="embeddings-status" class="status-container"></div>
         </div>
 
+        <!-- OCR Configuration -->
         <div class="section">
-          <div class="sectionTitle">OCR (Tesseract/Guten-OCR)</div>
-          <div class="row">
-            <div>
-              <label>OCR_BACKEND</label>
-              <select id="ocrBackend" autocomplete="off">
+          <h3>OCR 配置</h3>
+          <div class="form-row">
+            <div class="form-group">
+              <label for="ocrBackend">OCR 后端</label>
+              <select name="ocrBackend">
                 <option value="">(跟随服务端默认)</option>
                 <option value="tesseract">tesseract</option>
                 <option value="guten-ocr">guten-ocr</option>
               </select>
             </div>
-            <div>
-              <label>OCR_LANGUAGE</label>
-              <input id="ocrLanguage" type="text" autocomplete="off" placeholder="eng / chi_sim / chi_sim+eng" />
+            <div class="form-group">
+              <label for="ocrLanguage">OCR 语言</label>
+              <input name="ocrLanguage" type="text" placeholder="eng / chi_sim / chi_sim+eng">
             </div>
           </div>
-          <div style="margin-top: 10px;">
-            <label style="display: inline-flex; gap: 8px; align-items: center;">
-              <input id="ocrAutoDownload" type="checkbox" />
+          
+          <div class="form-group">
+            <label class="checkbox-label">
+              <input name="ocrAutoDownload" type="checkbox">
               <span>缺少 tesseract 时自动下载/初始化 guten-ocr 并回退</span>
             </label>
           </div>
-          <div class="btns">
-            <button id="refreshOcr" class="secondary">刷新状态</button>
-            <button id="downloadOcr" class="secondary">下载/初始化 guten-ocr</button>
+          
+          <div class="form-actions">
+            <button id="refresh-ocr" class="btn-secondary">刷新状态</button>
+            <button id="download-ocr" class="btn-secondary">下载/初始化 guten-ocr</button>
           </div>
-          <div id="ocrHint" class="hint" style="margin-top: 8px;"></div>
-          <div id="ocrList" class="memTree" style="margin-top: 10px;"></div>
+          
+          <div id="ocr-status" class="status-container"></div>
         </div>
 
-        <div class="section">
-          <div class="sectionTitle">上下文与记忆 (Context & Memory)</div>
-          <div class="btns">
-            <button id="refreshMemories" class="secondary">刷新列表</button>
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+      </div>
+
+      <!-- Terminal Page -->
+      <div id="terminal-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>Agent 终端</h2>
+          <div class="page-actions">
+            <button id="connect-terminal" class="btn-primary">Connect</button>
+            <button id="clear-terminal" class="btn-secondary">Clear</button>
           </div>
-          <div style="margin-top: 8px;">
-            <label style="display: inline-flex; gap: 8px; align-items: center;">
-              <input id="memoryEnabled" type="checkbox" checked />
-              <span>启用上下文/记忆检索（可能触发 embedding）</span>
-            </label>
-          </div>
-          <div id="memoryTree" class="memTree"></div>
         </div>
 
-        <div class="section">
-          <div class="sectionTitle">Skills</div>
-          <div class="btns">
-            <button id="reloadSkills" class="secondary">刷新列表</button>
+        <div class="terminal-container">
+          <div id="terminal-output" class="terminal-output"></div>
+          
+          <div class="terminal-input-container">
+            <div class="terminal-prompt">></div>
+            <input id="terminal-input" type="text" class="terminal-input" placeholder="Type a command or natural language request..." autocomplete="off">
           </div>
-          <table class="hdrTable skillsTable" aria-label="skills">
-            <thead>
-              <tr>
-                <th style="width: 26%;">Name</th>
-                <th style="width: 52%;">Description</th>
-                <th style="width: 22%;">Group</th>
-              </tr>
-            </thead>
-            <tbody id="skillsBody"></tbody>
-          </table>
         </div>
 
-        <div class="section">
-          <div class="sectionTitle">路由选择（/choose）</div>
-          <label>Query</label>
-          <textarea id="chooseQuery" placeholder="帮我设计一个 REST API 的分页规范"></textarea>
-          <div class="btns">
-            <button id="btnChoose">Choose</button>
-          </div>
-          <pre id="chooseOut"></pre>
-        </div>
-
-        <div class="section">
-          <div class="sectionTitle">文档提取（/documents/extract）</div>
-          <div class="row">
-            <div>
-              <label>Files</label>
-              <input id="docFile" type="file" multiple />
-            </div>
-          </div>
-          <div class="btns">
-            <button id="btnExtract">Extract</button>
-          </div>
-          <pre id="docOut"></pre>
+        <div class="terminal-help">
+          <p><strong>💡 提示:</strong> 输入 <code>/help</code> 查看可用命令，或直接输入自然语言请求</p>
         </div>
       </div>
-    </aside>
-    <script type="module" src="/app.js"></script>
-  </body>
+    </main>
+  </div>
+
+  <!-- Scripts -->
+  <script type="module" src="/vendor/marked/lib/marked.esm.js"></script>
+  <script type="module" src="/vendor/dompurify/dist/purify.es.mjs"></script>
+  <script type="module" src="/vendor/highlight.js/es/common.js"></script>
+  <script type="module" src="/src/main.js"></script>
+</body>
 </html>

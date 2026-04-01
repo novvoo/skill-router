@@ -8,8 +8,11 @@ import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync,
 import { ContextManager } from "./context/manager.js";
 import { RetrievalResult, ContextNode } from "./context/types.js";
 import { extractAndSaveMemories } from "./context/memory_extractor.js";
+import { taskAPI } from "./api/TaskAPI.js";
 import { getEmbeddingWarningsTail } from "./context/embeddings.js";
 import { fetchExternalApiContextsFromText, getExternalApiContextOptionsFromEnv, type ExternalApiFetchItem } from "./context/external_api.js";
+import { ToolExecutor, type ToolCall, type ToolCallResult, type ToolExecutionProgress } from "./tools/ToolExecutor.js";
+import { StreamingToolExecutor, type StreamingToolExecutionProgress } from "./tools/StreamingToolExecutor.js";
 
 const contextManagers = new Map<string, ContextManager>();
 
@@ -1209,6 +1212,148 @@ async function chatCompletions(
   return { content: String(content || ""), raw };
 }
 
+async function chatCompletionsWithTools(
+  config: OpenAIConfig,
+  {
+    messages,
+    tools,
+    temperature = 0.0,
+    max_tokens,
+    toolExecutor,
+    sessionId,
+    onProgress,
+    abortController,
+  }: {
+    messages: Array<{ role: "system" | "user" | "assistant" | "tool"; content: string; tool_call_id?: string }>;
+    tools?: Array<{ name: string; description: string; parameters: any }>;
+    temperature?: number;
+    max_tokens?: number;
+    toolExecutor?: StreamingToolExecutor;
+    sessionId?: string;
+    onProgress?: (e: { stage: string; message: string; data?: any }) => void;
+    abortController?: AbortController;
+  },
+) {
+  const base = config.baseUrl.endsWith("/") ? config.baseUrl : config.baseUrl + "/";
+  const url = new URL("chat/completions", base).toString();
+
+  const finalMessages = messages.map((m) => ({ 
+    role: m.role, 
+    content: m.content,
+    ...(m.tool_call_id && { tool_call_id: m.tool_call_id })
+  }));
+  
+  if (config.systemContent) {
+    finalMessages.unshift({ role: "system", content: config.systemContent });
+  }
+
+  const payload: Record<string, unknown> = {
+    model: config.model,
+    messages: finalMessages,
+    temperature,
+  };
+  
+  if (typeof max_tokens === "number") payload.max_tokens = max_tokens;
+  if (tools && tools.length > 0) {
+    payload.tools = tools.map(tool => ({
+      type: "function",
+      function: {
+        name: tool.name,
+        description: tool.description,
+        parameters: tool.parameters,
+      },
+    }));
+    payload.tool_choice = "auto";
+  }
+
+  let resp: Response;
+  try {
+    resp = await fetch(url, {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: `Bearer ${config.apiKey}`,
+        ...(config.defaultHeaders || {}),
+      },
+      body: JSON.stringify(payload),
+      signal: abortController?.signal,
+    });
+  } catch (e: any) {
+    const cause = e?.cause;
+    const detail = cause?.code || cause?.message || e?.message || String(e);
+    throw new Error(`OpenAI-compatible fetch failed (${url}): ${detail}`);
+  }
+
+  if (!resp.ok) {
+    const body = await resp.text().catch(() => "");
+    throw new Error(`OpenAI-compatible HTTPError ${resp.status}: ${body}`);
+  }
+  
+  const raw = await resp.json();
+  const choice = (raw as any)?.choices?.[0];
+  const message = choice?.message;
+  const content = String(message?.content || "");
+  const toolCalls = message?.tool_calls;
+
+  // If there are tool calls, execute them
+  if (toolCalls && toolCalls.length > 0 && toolExecutor) {
+    onProgress?.({ stage: "tools_start", message: "执行工具调用" });
+    
+    const parsedToolCalls = toolCalls.map((tc: any) => ({
+      id: String(tc.id || `tool_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`),
+      name: String(tc.function?.name || ""),
+      arguments: tc.function?.arguments ? JSON.parse(tc.function.arguments) : {},
+    }));
+
+    const toolResults = await toolExecutor.executeToolCallsStreaming(parsedToolCalls, {
+      sessionId,
+      abortController: abortController || new AbortController(),
+      onProgress: onProgress ? (progress: StreamingToolExecutionProgress) => {
+        onProgress({
+          stage: "tool_progress",
+          message: `${progress.toolName}: ${progress.message}`,
+          data: { 
+            toolId: progress.toolId, 
+            toolName: progress.toolName, 
+            status: progress.status,
+            stage: progress.stage,
+            ...progress.data 
+          }
+        });
+      } : undefined,
+    });
+
+    onProgress?.({ stage: "tools_complete", message: "工具调用完成" });
+
+    // Add tool results to messages and make another completion call
+    const toolMessages = toolResults.map((result: ToolCallResult) => ({
+      role: "tool" as const,
+      content: result.error ? `Error: ${result.error}` : JSON.stringify(result.result),
+      tool_call_id: result.id,
+    }));
+
+    const updatedMessages = [
+      ...finalMessages,
+      { role: "assistant" as const, content: content || "", tool_calls: toolCalls },
+      ...toolMessages,
+    ];
+
+    // Make another completion call with tool results
+    return await chatCompletionsWithTools(config, {
+      messages: updatedMessages,
+      tools,
+      temperature,
+      max_tokens,
+      toolExecutor,
+      sessionId,
+      onProgress,
+      abortController,
+    });
+  }
+
+  return { content, raw };
+}
+
 async function chooseSkill(config: OpenAIConfig, query: string): Promise<ChosenSkill> {
   const catalog = await loadCatalog();
   const skills = catalog.list;
@@ -1439,6 +1584,7 @@ async function runWithRouting(
     doc?: DocumentContext | null;
     docs?: DocumentContext[] | null;
     memory?: { enabled?: boolean; maxResults?: number } | boolean;
+    tools?: { enabled?: boolean; allowedTools?: string[] } | boolean;
     onProgress?: (e: { stage: string; message: string; data?: any }) => void;
   },
 ) {
@@ -1464,6 +1610,11 @@ async function runWithRouting(
   const compressed = await compressChatHistory(config, normalized, summaryIn);
   const summary = String(compressed.summary || "").trim();
   onProgress?.({ stage: "compress_done", message: "对话历史已压缩", data: { summarized: compressed.summarized } });
+
+  // Initialize tool executor
+  const toolsEnabled = typeof args.tools === "boolean" ? args.tools : args.tools && typeof args.tools === "object" ? args.tools.enabled !== false : true;
+  const allowedTools = typeof args.tools === "object" && args.tools && Array.isArray(args.tools.allowedTools) ? args.tools.allowedTools : undefined;
+  const toolExecutor = toolsEnabled ? new StreamingToolExecutor(config) : null;
 
   // Retrieve context
   const sessionId = args.messages?.[0]?.sessionId || undefined;
@@ -1682,7 +1833,19 @@ async function runWithRouting(
       ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
     onProgress?.({ stage: "chat", message: "生成回复" });
-    const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+    
+    const result = toolsEnabled && toolExecutor 
+      ? await chatCompletionsWithTools(config, { 
+          messages: promptMessages, 
+          temperature: 0.2,
+          tools: toolExecutor.getToolSchemas(),
+          toolExecutor,
+          sessionId,
+          onProgress,
+          abortController: new AbortController(),
+        })
+      : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+    
     const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
     onProgress?.({ stage: "chat_done", message: "回复生成完成" });
     
@@ -1717,7 +1880,19 @@ if (!meta) {
     ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
   ];
   onProgress?.({ stage: "chat", message: "生成回复" });
-  const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+  
+  const result = toolsEnabled && toolExecutor 
+    ? await chatCompletionsWithTools(config, { 
+        messages: promptMessages, 
+        temperature: 0.2,
+        tools: toolExecutor.getToolSchemas(),
+        toolExecutor,
+        sessionId,
+        onProgress,
+        abortController: new AbortController(),
+      })
+    : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+  
   const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
   onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
@@ -1751,7 +1926,19 @@ const promptMessages: Array<{ role: "system" | "user" | "assistant"; content: st
   ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
 ];
 onProgress?.({ stage: "chat", message: "生成回复" });
-const result = await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+
+const result = toolsEnabled && toolExecutor 
+  ? await chatCompletionsWithTools(config, { 
+      messages: promptMessages, 
+      temperature: 0.2,
+      tools: toolExecutor.getToolSchemas(),
+      toolExecutor,
+      sessionId,
+      onProgress,
+      abortController: new AbortController(),
+    })
+  : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+
 const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
 onProgress?.({ stage: "chat_done", message: "回复生成完成" });
 
@@ -2099,14 +2286,183 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       }
     }
 
+    if (req.method === "GET" && url.pathname === "/api/agents") {
+      const agentManager = (await import('./agents/AgentManager.js')).AgentManager.getInstance();
+      const agents = agentManager.getAvailableAgents();
+      const runningAgents = agentManager.getRunningAgents();
+      
+      return sendJson(res, 200, {
+        available: agents.map(agent => ({
+          agentType: agent.agentType,
+          name: agent.name,
+          description: agent.description,
+          background: agent.background,
+          color: agent.color,
+          source: agent.source
+        })),
+        running: runningAgents.map(instance => ({
+          id: instance.id,
+          agentType: instance.definition.agentType,
+          name: instance.definition.name,
+          prompt: instance.prompt,
+          description: instance.options.description
+        }))
+      });
+    }
+
+    // 任务管理API路由
+    if (url.pathname.startsWith("/api/tasks")) {
+      
+      if (req.method === "GET" && url.pathname === "/api/tasks") {
+        return await taskAPI.getAllTasks(req, res);
+      }
+      
+      if (req.method === "GET" && url.pathname === "/api/tasks/stats") {
+        return await taskAPI.getTaskStats(req, res);
+      }
+      
+      if (req.method === "GET" && url.pathname === "/api/tasks/events") {
+        return await taskAPI.getTaskEvents(req, res);
+      }
+      
+      if (req.method === "POST" && url.pathname === "/api/tasks/agent") {
+        return await taskAPI.createAgentTask(req, res);
+      }
+      
+      if (req.method === "POST" && url.pathname === "/api/tasks/shell") {
+        return await taskAPI.createShellTask(req, res);
+      }
+      
+      // 单个任务操作
+      const taskIdMatch = url.pathname.match(/^\/api\/tasks\/([^\/]+)$/);
+      if (taskIdMatch) {
+        const taskId = taskIdMatch[1];
+        if (req.method === "GET") {
+          return await taskAPI.getTask(req, res, taskId);
+        }
+        if (req.method === "DELETE") {
+          return await taskAPI.killTask(req, res, taskId);
+        }
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agents/spawn") {
+      try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { agent_type, prompt, description, background = false } = body;
+        
+        if (!agent_type || !prompt || !description) {
+          return sendJson(res, 400, { error: "Missing required fields: agent_type, prompt, description" });
+        }
+        
+        const agentManager = (await import('./agents/AgentManager.js')).AgentManager.getInstance();
+        
+        const instance = await agentManager.spawnAgent(agent_type, prompt, {
+          description,
+          background,
+          sessionId: undefined, // 暂时不使用sessionId
+        });
+        
+        if (background) {
+          return sendJson(res, 200, {
+            status: 'background',
+            agentId: instance.id,
+            message: 'Agent started in background'
+          });
+        } else {
+          const result = await instance.execute();
+          return sendJson(res, 200, {
+            status: 'completed',
+            agentId: instance.id,
+            result: result.content,
+            usage: result.usage
+          });
+        }
+      } catch (error: any) {
+        return sendJson(res, 500, { error: String(error?.message || error) });
+      }
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/tools") {
+      try {
+        const { ToolExecutor } = await import('./tools/ToolExecutor.js');
+        const config = getOpenAIConfigFromRequest(req);
+        const toolExecutor = new ToolExecutor(config);
+        const tools = toolExecutor.getAvailableTools();
+        
+        return sendJson(res, 200, {
+          tools: tools.map(tool => ({
+            name: tool.name,
+            description: tool.searchHint || tool.name,
+            isReadOnly: tool.isReadOnly({}),
+            parameters: tool.inputJSONSchema || { type: 'object', properties: {} }
+          }))
+        });
+      } catch (error: any) {
+        return sendJson(res, 500, { error: String(error?.message || error) });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/tools/execute") {
+      try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { tool_calls } = body;
+        
+        if (!Array.isArray(tool_calls) || tool_calls.length === 0) {
+          return sendJson(res, 400, { error: "Missing or invalid tool_calls array" });
+        }
+        
+        const { ToolExecutor } = await import('./tools/ToolExecutor.js');
+        const config = getOpenAIConfigFromRequest(req);
+        const toolExecutor = new ToolExecutor(config);
+        
+        const results = await toolExecutor.executeToolCalls(tool_calls, {
+          abortController: new AbortController(),
+          onProgress: (progress) => {
+            // Could emit SSE events here for real-time progress
+            console.log('Tool progress:', progress);
+          }
+        });
+        
+        const formatted = toolExecutor.formatToolResults(results);
+        
+        return sendJson(res, 200, {
+          results,
+          formatted: formatted || undefined
+        });
+      } catch (error: any) {
+        return sendJson(res, 500, { error: String(error?.message || error) });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/api/agents/kill") {
+      try {
+        const body = await readJsonBody(req, 1024);
+        const { agentId } = body;
+        
+        if (!agentId) {
+          return sendJson(res, 400, { error: "Missing agentId" });
+        }
+        
+        const agentManager = (await import('./agents/AgentManager.js')).AgentManager.getInstance();
+        const success = agentManager.killAgent(agentId);
+        
+        return sendJson(res, 200, { success, agentId });
+      } catch (error: any) {
+        return sendJson(res, 500, { error: String(error?.message || error) });
+      }
+    }
+
     if (req.method === "GET" && url.pathname === "/") {
       return sendJson(res, 200, {
         ok: true,
         endpoints: {
           skills: { method: "GET", path: "/skills" },
           choose: { method: "POST", path: "/choose", body: { query: "..." } },
-          run: { method: "POST", path: "/run", body: "application/json({query|messages, document_url(s)?, ocr_*?}) | multipart/form-data(query+file(s)|document_url(s)+ocr_*?)" },
+          run: { method: "POST", path: "/run", body: "application/json({query|messages, document_url(s)?, ocr_*?, tools?}) | multipart/form-data(query+file(s)|document_url(s)+ocr_*?+tools?)" },
           documents_extract: { method: "POST", path: "/documents/extract", body: "multipart/form-data(file|url + ocr_*?) | application/json(base64|url + ocr_*?)" },
+          tools: { method: "GET", path: "/tools", note: "list available tools" },
+          tools_execute: { method: "POST", path: "/tools/execute", body: { tool_calls: [{ name: "tool_name", arguments: {} }] } },
           outputs: { method: "GET", path: "/outputs/<relative-path>", note: "serve files under ./output/ as attachments" },
           memories: { method: "GET,POST,DELETE", path: "/memories" },
           embeddings_status: { method: "GET", path: "/embeddings/status" },
@@ -2533,6 +2889,58 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
       return sendJson(res, 200, chosen);
     }
 
+    if (req.method === "GET" && url.pathname === "/tools") {
+      try {
+        const config = getOpenAIConfigFromRequest(req);
+        const toolExecutor = new ToolExecutor(config);
+        const tools = toolExecutor.getAvailableTools();
+        
+        return sendJson(res, 200, {
+          tools: tools.map(tool => ({
+            name: tool.name,
+            aliases: tool.aliases,
+            searchHint: tool.searchHint,
+            description: tool.searchHint || "No description",
+            enabled: tool.isEnabled(),
+            maxResultSizeChars: tool.maxResultSizeChars,
+            shouldDefer: tool.shouldDefer,
+            alwaysLoad: tool.alwaysLoad,
+          })),
+          schemas: toolExecutor.getToolSchemas(),
+        });
+      } catch (e: any) {
+        return sendJson(res, 400, { error: String(e?.message || e) });
+      }
+    }
+
+    if (req.method === "POST" && url.pathname === "/tools/execute") {
+      try {
+        const config = getOpenAIConfigFromRequest(req);
+        const body: any = await readJsonBody(req, 10 * 1024 * 1024);
+        const toolCalls = Array.isArray(body?.tool_calls) ? body.tool_calls : [];
+        
+        if (!toolCalls.length) {
+          return sendJson(res, 400, { error: "tool_calls array is required" });
+        }
+        
+        const toolExecutor = new ToolExecutor(config);
+        const sessionId = String(body?.session_id || "");
+        const abortController = new AbortController();
+        
+        const results = await toolExecutor.executeToolCalls(toolCalls, {
+          sessionId: sessionId || undefined,
+          abortController,
+        });
+        
+        return sendJson(res, 200, {
+          results,
+          formatted: toolExecutor.formatToolResults(results),
+        });
+      } catch (e: any) {
+        return sendJson(res, 500, { error: String(e?.message || e) });
+      }
+    }
+
     if (req.method === "POST" && url.pathname === "/run") {
       const ct = String(req.headers["content-type"] || "").toLowerCase();
       const wantsStream = String(req.headers.accept || "").toLowerCase().includes("text/event-stream") || url.searchParams.get("stream") === "1";
@@ -2746,7 +3154,30 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
             if (v === "1" || v === "true" || v === "on" || v === "yes") return true;
             return true;
           })();
-          const result = await runWithRouting(config, { query, messages, summary, doc, docs, memory: { enabled: memoryEnabled }, onProgress: emit });
+          
+          // Parse tools configuration
+          const toolsEnabled = (() => {
+            const raw = String(parsed.fields["tools_enabled"] ?? parsed.fields["toolsEnabled"] ?? "").trim().toLowerCase();
+            if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+            return true; // Default to enabled
+          })();
+          
+          const allowedTools = parsed.fields["allowed_tools"] || parsed.fields["allowedTools"];
+          const toolsConfig = {
+            enabled: toolsEnabled,
+            ...(allowedTools && { allowedTools: Array.isArray(allowedTools) ? allowedTools : String(allowedTools).split(',').map(s => s.trim()) })
+          };
+          
+          const result = await runWithRouting(config, { 
+            query, 
+            messages, 
+            summary, 
+            doc, 
+            docs, 
+            memory: { enabled: memoryEnabled }, 
+            tools: toolsConfig,
+            onProgress: emit 
+          });
           const documents = docs.map((d) => ({
             filename: d.filename,
             mime_type: d.mimeType,
@@ -2928,8 +3359,31 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
           }
           return true;
         })();
+        
+        // Parse tools configuration
+        const toolsEnabled = (() => {
+          const raw = String(body?.tools_enabled ?? body?.toolsEnabled ?? "").trim().toLowerCase();
+          if (raw) return !(raw === "0" || raw === "false" || raw === "off" || raw === "no");
+          return body?.tools !== false; // Default to enabled unless explicitly disabled
+        })();
+        
+        const allowedTools = body?.allowed_tools || body?.allowedTools;
+        const toolsConfig = {
+          enabled: toolsEnabled,
+          ...(allowedTools && { allowedTools: Array.isArray(allowedTools) ? allowedTools : String(allowedTools).split(',').map(s => s.trim()) })
+        };
+        
         const doc = docs[0] || null;
-        const result = await runWithRouting(config, { query, messages, summary, doc, docs, memory: { enabled: memoryEnabled }, onProgress: emit });
+        const result = await runWithRouting(config, { 
+          query, 
+          messages, 
+          summary, 
+          doc, 
+          docs, 
+          memory: { enabled: memoryEnabled }, 
+          tools: toolsConfig,
+          onProgress: emit 
+        });
         if (wantsStream) {
           const documents = docs.map((d) => ({
             filename: d.filename,

@@ -1,0 +1,131 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>任务管理 - Skill-Router</title>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+      background: #0f172a;
+      color: #f8fafc;
+      margin: 0;
+      padding: 20px;
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      min-height: 100vh;
+    }
+    .redirect-container {
+      text-align: center;
+      background: #1e293b;
+      padding: 40px;
+      border-radius: 12px;
+      border: 1px solid #334155;
+      max-width: 500px;
+    }
+    .redirect-container h1 {
+      margin-bottom: 20px;
+      color: #3b82f6;
+    }
+    .redirect-container p {
+      margin-bottom: 30px;
+      color: #cbd5e1;
+      line-height: 1.6;
+    }
+    .btn {
+      display: inline-block;
+      padding: 12px 24px;
+      background: #3b82f6;
+      color: white;
+      text-decoration: none;
+      border-radius: 6px;
+      font-weight: 500;
+      transition: background-color 0.2s;
+      margin: 0 10px;
+    }
+    .btn:hover {
+      background: #2563eb;
+    }
+    .btn-secondary {
+      background: #6b7280;
+    }
+    .btn-secondary:hover {
+      background: #4b5563;
+    }
+    .countdown {
+      margin-top: 20px;
+      color: #64748b;
+      font-size: 14px;
+    }
+    .features {
+      text-align: left;
+      margin: 20px 0;
+      padding: 20px;
+      background: #0f172a;
+      border-radius: 8px;
+      border: 1px solid #334155;
+    }
+    .features h3 {
+      color: #3b82f6;
+      margin-bottom: 15px;
+    }
+    .features ul {
+      list-style: none;
+      padding: 0;
+    }
+    .features li {
+      padding: 5px 0;
+      color: #cbd5e1;
+    }
+    .features li:before {
+      content: "✅ ";
+      margin-right: 8px;
+    }
+  </style>
+</head>
+<body>
+  <div class="redirect-container">
+    <h1>🚀 任务管理系统升级</h1>
+    <p>任务管理功能已整合到主应用中，提供更统一的用户体验！</p>
+    
+    <div class="features">
+      <h3>新功能特性：</h3>
+      <ul>
+        <li>统一的导航界面</li>
+        <li>实时任务状态更新</li>
+        <li>Agent和Shell任务支持</li>
+        <li>任务优先级管理</li>
+        <li>后台任务支持</li>
+        <li>任务统计和过滤</li>
+      </ul>
+    </div>
+    
+    <p>您将在 <span id="countdown">5</span> 秒后自动跳转到新的任务管理页面。</p>
+    
+    <div>
+      <a href="/index.html#/tasks" class="btn">立即跳转到任务管理</a>
+      <a href="/index.html" class="btn btn-secondary">返回主页</a>
+    </div>
+    
+    <div class="countdown">
+      新的任务管理页面集成了所有功能，使用更加便捷
+    </div>
+  </div>
+
+  <script>
+    let count = 5;
+    const countdownEl = document.getElementById('countdown');
+    
+    const timer = setInterval(() => {
+      count--;
+      countdownEl.textContent = count;
+      
+      if (count <= 0) {
+        clearInterval(timer);
+        window.location.href = '/index.html#/tasks';
+      }
+    }, 1000);
+  </script>
+</body>
+</html>
