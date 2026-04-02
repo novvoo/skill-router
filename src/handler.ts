@@ -1174,7 +1174,7 @@ async function chatCompletions(
   const url = new URL("chat/completions", base).toString();
 
   const finalMessages = messages.map((m) => ({ role: m.role, content: m.content }));
-  if (config.systemContent) {
+  if (config.systemContent && (!finalMessages.length || finalMessages[0].role !== "system")) {
     finalMessages.unshift({ role: "system", content: config.systemContent });
   }
 
@@ -1243,7 +1243,7 @@ async function chatCompletionsWithTools(
     ...(m.tool_call_id && { tool_call_id: m.tool_call_id })
   }));
   
-  if (config.systemContent) {
+  if (config.systemContent && (!finalMessages.length || finalMessages[0].role !== "system")) {
     finalMessages.unshift({ role: "system", content: config.systemContent });
   }
 
