@@ -373,6 +373,22 @@ export const WebSearchTool = buildTool({
                     "role": "ADMIN",
                     "updatedAt": "2023-08-11T17:38:49.119Z",
                     "username": "michael80"
+                  },
+                  {
+                    "__v": 0,
+                    "_id": "64d672295bda3332e4f36525",
+                    "avatar": {
+                      "_id": "64d672295bda3332e4f36526",
+                      "localPath": "",
+                      "url": "https://cloudflare-ipfs.com/ipfs/Qmd3W5DuhgHirLHGVixi6V76LhCkZUz6pnFt5AJBiyvHye/avatar/529.jpg"
+                    },
+                    "createdAt": "2023-08-11T17:38:49.119Z",
+                    "email": "dayton.hirthe@yahoo.com",
+                    "isEmailVerified": true,
+                    "loginType": "EMAIL_PASSWORD",
+                    "role": "USER",
+                    "updatedAt": "2023-08-11T17:38:49.119Z",
+                    "username": "anahi_herman"
                   }
                 ],
                 "updatedAt": new Date().toISOString()
@@ -464,6 +480,38 @@ ${chatData.data.participants.map((participant: any) => `- ${participant.username
                   "role": "USER",
                   "updatedAt": "2023-08-11T17:39:09.579Z",
                   "username": "sandrine8"
+                },
+                {
+                  "__v": 0,
+                  "_id": "64d672295bda3332e4f3651c",
+                  "avatar": {
+                    "_id": "64d672295bda3332e4f3651d",
+                    "localPath": "",
+                    "url": "https://cloudflare-ipfs.com/ipfs/Qmd3W5DuhgHirLHGVixi6V76LhCkZUz6pnFt5AJBiyvHye/avatar/1038.jpg"
+                  },
+                  "createdAt": "2023-08-11T17:38:49.119Z",
+                  "email": "vicky.pfeffer49@gmail.com",
+                  "isEmailVerified": true,
+                  "loginType": "EMAIL_PASSWORD",
+                  "role": "ADMIN",
+                  "updatedAt": "2023-08-11T17:38:49.119Z",
+                  "username": "michael80"
+                },
+                {
+                  "__v": 0,
+                  "_id": "64d672295bda3332e4f36525",
+                  "avatar": {
+                    "_id": "64d672295bda3332e4f36526",
+                    "localPath": "",
+                    "url": "https://cloudflare-ipfs.com/ipfs/Qmd3W5DuhgHirLHGVixi6V76LhCkZUz6pnFt5AJBiyvHye/avatar/529.jpg"
+                  },
+                  "createdAt": "2023-08-11T17:38:49.119Z",
+                  "email": "dayton.hirthe@yahoo.com",
+                  "isEmailVerified": true,
+                  "loginType": "EMAIL_PASSWORD",
+                  "role": "USER",
+                  "updatedAt": "2023-08-11T17:38:49.119Z",
+                  "username": "anahi_herman"
                 }
               ],
               "updatedAt": new Date().toISOString()
