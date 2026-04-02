@@ -2243,8 +2243,8 @@ async function serveVendorFile(res: http.ServerResponse, pathname: string) {
   const rel = parts.slice(2).join("/");
   const allow = VENDOR_ALLOW[pkg];
   if (!allow || !allow.includes(rel)) return null;
-  const abs = path.resolve(NODE_MODULES_DIR, pkg, rel);
-  const safeRel = path.relative(path.resolve(NODE_MODULES_DIR, pkg), abs);
+  const abs = path.resolve(PUBLIC_DIR, "vendor", pkg, rel);
+  const safeRel = path.relative(path.resolve(PUBLIC_DIR, "vendor", pkg), abs);
   if (!safeRel || safeRel.startsWith("..") || path.isAbsolute(safeRel)) return null;
   let data: Buffer;
   try {

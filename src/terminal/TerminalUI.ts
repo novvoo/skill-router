@@ -1,4 +1,6 @@
 import { createInterface } from 'readline'
+import { marked } from 'marked'
+import hljs from 'highlight.js'
 
 export interface ProgressUpdate {
   stage: string
@@ -11,6 +13,14 @@ export class TerminalUI {
   private progressTracker: any = null
   private isInteractive = false
   private rl: any
+
+  constructor() {
+    // 配置marked使用highlight.js进行代码高亮
+    marked.setOptions({
+      breaks: true,
+      gfm: true
+    })
+  }
 
   async startInteractiveMode(config?: { apiKey: string; baseUrl: string; model: string }): Promise<void> {
     // 直接导入，避免循环依赖问题
@@ -137,9 +147,83 @@ export class TerminalUI {
   displayResult(result: string): void {
     console.log('\n📋 Result:')
     console.log('─'.repeat(50))
-    console.log(result)
+    
+    // 检查是否包含markdown内容
+    if (this.containsMarkdown(result)) {
+      // 渲染markdown为终端友好的格式
+      const rendered = this.renderMarkdownForTerminal(result)
+      console.log(rendered)
+    } else {
+      // 直接显示纯文本
+      console.log(result)
+    }
+    
     console.log('─'.repeat(50))
     console.log('')
+  }
+
+  private containsMarkdown(text: string): boolean {
+    // 检查常见的markdown标记
+    const markdownPatterns = [
+      /^#{1,6}\s/, // 标题
+      /^-\s/, // 无序列表
+      /^\d+\.\s/, // 有序列表
+      /```[\s\S]*?```/, // 代码块
+      /\*\*[\s\S]*?\*\*/, // 粗体
+      /\*[\s\S]*?\*/, // 斜体
+      /\[.*?\]\(.*?\)/, // 链接
+      /!\[.*?\]\(.*?\)/, // 图片
+      /^>\s/ // 引用
+    ]
+    
+    return markdownPatterns.some(pattern => pattern.test(text))
+  }
+
+  private renderMarkdownForTerminal(markdown: string): string {
+    // 简单的markdown到终端文本的转换
+    let result = markdown
+    
+    // 处理标题
+    result = result.replace(/^(#{1,6})\s(.*)$/gm, (match, hashes, text) => {
+      const level = hashes.length
+      const indent = '  '.repeat(level - 1)
+      const symbol = '#' .repeat(level)
+      return `${indent}${symbol} ${text}`
+    })
+    
+    // 处理无序列表
+    result = result.replace(/^-\s(.*)$/gm, '  • $1')
+    
+    // 处理有序列表
+    result = result.replace(/^(\d+)\.\s(.*)$/gm, '  $1. $2')
+    
+    // 处理粗体
+    result = result.replace(/\*\*(.*?)\*\*/g, '\x1b[1m$1\x1b[0m')
+    
+    // 处理斜体
+    result = result.replace(/\*(.*?)\*/g, '\x1b[3m$1\x1b[0m')
+    
+    // 处理代码块
+    result = result.replace(/```(\w*)\n([\s\S]*?)```/gm, (match: string, lang: string, code: string) => {
+      const language = lang || 'plaintext'
+      const lines = code.split('\n')
+      const indentedCode = lines.map((line: string) => `    ${line}`).join('\n')
+      return `\n📄 ${language} code:\n${indentedCode}\n`
+    })
+    
+    // 处理行内代码
+    result = result.replace(/`(.*?)`/g, '\x1b[36m$1\x1b[0m')
+    
+    // 处理引用
+    result = result.replace(/^>\s(.*)$/gm, '  > $1')
+    
+    // 处理链接
+    result = result.replace(/\[(.*?)\]\((.*?)\)/g, '$1 (链接: $2)')
+    
+    // 处理图片
+    result = result.replace(/!\[(.*?)\]\((.*?)\)/g, '📷 $1 (图片: $2)')
+    
+    return result
   }
 
   displayError(error: string): void {
