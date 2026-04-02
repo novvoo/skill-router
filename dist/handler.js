@@ -550,7 +550,7 @@ async function readRequestBody(req, maxBytes) {
     }
     return Buffer.concat(chunks);
 }
-async function readJsonBody(req, maxBytes) {
+export async function readJsonBody(req, maxBytes) {
     const ct = String(req.headers["content-type"] || "");
     if (!ct.toLowerCase().includes("application/json"))
         throw new Error("Content-Type must be application/json");
@@ -1032,7 +1032,7 @@ function getOpenAIConfigFromRequest(req) {
     const model = (headerModel || String(process.env.OPENAI_MODEL || "")).trim();
     const embeddingModel = (headerEmbeddingModel ||
         String(process.env.EMBEDDING_MODEL || "") ||
-        String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")).trim();
+        String(process.env.OPENAI_EMBEDDING_MODEL || "fast")).trim();
     const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint || process.env.HF_ENDPOINT) || undefined;
     let defaultHeaders;
     const rawDefaultHeaders = headerDefaultHeaders || process.env.OPENAI_DEFAULT_HEADERS;
@@ -1142,7 +1142,7 @@ async function chatCompletions(config, { messages, temperature = 0.0, max_tokens
     const base = config.baseUrl.endsWith("/") ? config.baseUrl : config.baseUrl + "/";
     const url = new URL("chat/completions", base).toString();
     const finalMessages = messages.map((m) => ({ role: m.role, content: m.content }));
-    if (config.systemContent) {
+    if (config.systemContent && (!finalMessages.length || finalMessages[0].role !== "system")) {
         finalMessages.unshift({ role: "system", content: config.systemContent });
     }
     const payload = {
@@ -1187,7 +1187,7 @@ async function chatCompletionsWithTools(config, { messages, tools, temperature =
         content: m.content,
         ...(m.tool_call_id && { tool_call_id: m.tool_call_id })
     }));
-    if (config.systemContent) {
+    if (config.systemContent && (!finalMessages.length || finalMessages[0].role !== "system")) {
         finalMessages.unshift({ role: "system", content: config.systemContent });
     }
     const payload = {
@@ -1541,7 +1541,10 @@ async function runWithRouting(config, args) {
             : lowerEmbeddingModel.startsWith("kreuzberg:") || lowerEmbeddingModel.startsWith("kreuzberg/")
                 ? lowerEmbeddingModel.slice(10).trim()
                 : lowerEmbeddingModel;
-    const embeddingUsesKreuzberg = presetSet.has(normalizedPreset);
+    // Use fast preset if the normalized preset is not valid
+    const finalPreset = presetSet.has(normalizedPreset) ? normalizedPreset : "fast";
+    // Always use kreuzberg provider, ignore openai_compatible
+    const embeddingUsesKreuzberg = true;
     const cacheDirFromEnv = String(process.env.KREUZBERG_CACHE_DIR || "").trim();
     const embeddingCacheDir = path.resolve(process.cwd(), cacheDirFromEnv || ".cache/models");
     const hfEndpointResolved = normalizeHfEndpoint(config.hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
@@ -1552,7 +1555,7 @@ async function runWithRouting(config, args) {
     const indexItemTimeoutMs = Number(String(process.env.MEMORY_INDEX_ITEM_TIMEOUT_MS || "").trim() || "0") || null;
     const indexHeartbeatMs = Number(String(process.env.MEMORY_INDEX_HEARTBEAT_MS || "").trim() || "0") || null;
     const embeddingDims = (() => {
-        switch (normalizedPreset) {
+        switch (finalPreset) {
             case "fast":
             case "compact":
                 return 384;
@@ -1564,17 +1567,17 @@ async function runWithRouting(config, args) {
             case "multilingual":
                 return 1024;
             default:
-                return null;
+                return 384; // Default to 384 for fast preset
         }
     })();
     onProgress?.({
         stage: "memory_search_config",
         message: "检索配置",
         data: {
-            embedding_model: rawEmbeddingModel || null,
-            embedding_provider: embeddingUsesKreuzberg ? "kreuzberg" : "openai_compatible",
-            preset: embeddingUsesKreuzberg ? normalizedPreset : null,
-            cache_dir: embeddingUsesKreuzberg ? embeddingCacheDir : null,
+            embedding_model: finalPreset,
+            embedding_provider: "kreuzberg",
+            preset: finalPreset,
+            cache_dir: embeddingCacheDir,
             hf_endpoint: hfEndpointResolved,
             timeouts: {
                 openai_embed_ms: timeoutOpenAIEmbedMs,
@@ -1637,19 +1640,14 @@ async function runWithRouting(config, args) {
             memory: { retrieval_called: memoryEnabled, retrieved_count: retrieval.nodes.length, used_in_prompt: false },
             models: {
                 chat: config.model,
-                embedding: embeddingUsesKreuzberg
-                    ? {
-                        provider: "kreuzberg",
-                        model_type: "preset",
-                        preset: normalizedPreset,
-                        dimensions: embeddingDims,
-                        cache_dir: embeddingCacheDir,
-                        hf_endpoint: process.env.HF_ENDPOINT || null,
-                    }
-                    : {
-                        provider: "openai_compatible",
-                        model: rawEmbeddingModel || "text-embedding-3-small",
-                    },
+                embedding: {
+                    provider: "kreuzberg",
+                    model_type: "preset",
+                    preset: finalPreset,
+                    dimensions: embeddingDims,
+                    cache_dir: embeddingCacheDir,
+                    hf_endpoint: hfEndpointResolved,
+                },
             },
         };
     }
@@ -1694,19 +1692,14 @@ async function runWithRouting(config, args) {
         },
         models: {
             chat: config.model,
-            embedding: embeddingUsesKreuzberg
-                ? {
-                    provider: "kreuzberg",
-                    model_type: "preset",
-                    preset: normalizedPreset,
-                    dimensions: embeddingDims,
-                    cache_dir: embeddingCacheDir,
-                    hf_endpoint: process.env.HF_ENDPOINT || null,
-                }
-                : {
-                    provider: "openai_compatible",
-                    model: rawEmbeddingModel || "text-embedding-3-small",
-                },
+            embedding: {
+                provider: "kreuzberg",
+                model_type: "preset",
+                preset: finalPreset,
+                dimensions: embeddingDims,
+                cache_dir: embeddingCacheDir,
+                hf_endpoint: hfEndpointResolved,
+            },
         },
     };
     if (chosen.skill === "none") {
@@ -1722,6 +1715,7 @@ async function runWithRouting(config, args) {
             ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
         ];
         onProgress?.({ stage: "chat", message: "生成回复" });
+        const usedTools = new Set();
         const result = toolsEnabled && toolExecutor
             ? await chatCompletionsWithTools(config, {
                 messages: promptMessages,
@@ -1729,7 +1723,13 @@ async function runWithRouting(config, args) {
                 tools: toolExecutor.getToolSchemas(),
                 toolExecutor,
                 sessionId,
-                onProgress,
+                onProgress: (e) => {
+                    // Track used tools from progress events
+                    if (e.stage === "tool_progress" && e.data?.toolName) {
+                        usedTools.add(e.data.toolName);
+                    }
+                    onProgress?.(e);
+                },
                 abortController: new AbortController(),
             })
             : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
@@ -1742,7 +1742,9 @@ async function runWithRouting(config, args) {
         return {
             chosen,
             skill: null,
-            used_skills: [],
+            used_skills: Array.from(usedTools),
+            tasks: [], // Add tasks field
+            tools: Array.from(usedTools), // Add tools field with actual used tools
             response: content,
             summary,
             summarized: compressed.summarized,
@@ -2222,6 +2224,24 @@ export async function handleRequest(req, res) {
                 if (req.method === "DELETE") {
                     return await taskAPI.killTask(req, res, taskId);
                 }
+            }
+        }
+        // 文件系统API路由
+        if (url.pathname.startsWith("/api/files")) {
+            if (req.method === "GET" && url.pathname === "/api/files") {
+                return await handleFilesList(req, res);
+            }
+            if (req.method === "GET" && url.pathname === "/api/files/cwd") {
+                return await handleFilesCwd(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/cwd") {
+                return await handleFilesSetCwd(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/directory") {
+                return await handleFilesCreateDirectory(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/file") {
+                return await handleFilesCreateFile(req, res);
             }
         }
         if (req.method === "POST" && url.pathname === "/api/agents/spawn") {
@@ -3290,3 +3310,106 @@ export async function handleRequest(req, res) {
         return sendJson(res, 500, { error: String(e?.message || e) });
     }
 }
+// 文件系统API处理函数
+async function handleFilesList(req, res) {
+    try {
+        const url = new URL(req.url || '', `http://${req.headers.host}`);
+        const pathParam = url.searchParams.get('path') || process.cwd();
+        const safePath = path.resolve(pathParam);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!safePath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        const entries = readdirSync(safePath, { withFileTypes: true });
+        const files = entries.map(entry => {
+            const entryPath = path.join(safePath, entry.name);
+            const stat = statSync(entryPath);
+            return {
+                name: entry.name,
+                path: entryPath,
+                type: entry.isDirectory() ? 'directory' : 'file',
+                size: stat.size,
+                mtime: stat.mtime.getTime()
+            };
+        });
+        sendJson(res, 200, { files });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesCwd(req, res) {
+    try {
+        sendJson(res, 200, { cwd: process.cwd() });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesSetCwd(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { path: newPath } = body;
+        if (!newPath) {
+            return sendJson(res, 400, { error: 'Path is required' });
+        }
+        const safePath = path.resolve(newPath);
+        // 安全检查：确保路径存在且是目录
+        if (!existsSync(safePath) || !statSync(safePath).isDirectory()) {
+            return sendJson(res, 400, { error: 'Invalid directory path' });
+        }
+        process.chdir(safePath);
+        sendJson(res, 200, { cwd: process.cwd() });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesCreateDirectory(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { name, path: parentPath } = body;
+        if (!name) {
+            return sendJson(res, 400, { error: 'Directory name is required' });
+        }
+        const parentDir = parentPath || process.cwd();
+        const safeParent = path.resolve(parentDir);
+        const newDirPath = path.join(safeParent, name);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!newDirPath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        mkdirSync(newDirPath, { recursive: true });
+        sendJson(res, 200, { path: newDirPath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesCreateFile(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { name, path: parentPath, content = '' } = body;
+        if (!name) {
+            return sendJson(res, 400, { error: 'File name is required' });
+        }
+        const parentDir = parentPath || process.cwd();
+        const safeParent = path.resolve(parentDir);
+        const newFilePath = path.join(safeParent, name);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!newFilePath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        // 创建父目录（如果不存在）
+        mkdirSync(path.dirname(newFilePath), { recursive: true });
+        writeFileSync(newFilePath, content, 'utf8');
+        sendJson(res, 200, { path: newFilePath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+export { chatCompletionsWithTools };

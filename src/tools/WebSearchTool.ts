@@ -61,6 +61,16 @@ function makeOutputFromSearchResponse(
   let textAcc = ''
   let inText = true
 
+  // Ensure result is an array
+  if (!Array.isArray(result)) {
+    results.push(`Error: Invalid response format - expected array but got ${typeof result}`)
+    return {
+      query,
+      results,
+      durationSeconds,
+    }
+  }
+
   for (const block of result) {
     if (block.type === 'server_tool_use') {
       if (inText) {
@@ -76,7 +86,7 @@ function makeOutputFromSearchResponse(
     if (block.type === 'web_search_tool_result') {
       // Handle error case
       if (!Array.isArray(block.content)) {
-        const errorMessage = `Web search error: ${block.content.error_code}`
+        const errorMessage = `Web search error: ${block.content?.error_code || 'Unknown error'}`
         console.error(errorMessage)
         results.push(errorMessage)
         continue
@@ -154,7 +164,7 @@ export const WebSearchTool = buildTool({
   async validateInput(input) {
     const { query, allowed_domains, blocked_domains } = input
     
-    if (!query.length) {
+    if (!query || !query.length) {
       return {
         result: false,
         message: 'Error: Missing query',

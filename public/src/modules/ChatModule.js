@@ -11,6 +11,8 @@ export class ChatModule extends BaseModule {
     this.contextMessages = [];
     this.summary = '';
     this.isPreviewMode = false;
+    this.processLogs = new Map(); // Map to store process logs by message index
+    this.currentProgress = new Map(); // Map to store current progress by message index
     
     this.setupMarkdown();
   }
@@ -49,9 +51,28 @@ export class ChatModule extends BaseModule {
     this.setupEventListeners();
     this.renderMessages();
     
+    // Load current working directory
+    await this.loadCurrentDirectory();
+    
     // Initialize with welcome message if empty
     if (this.messages.length === 0) {
       this.addMessage('assistant', '你好，我是 skill-router。把你的任务发给我，必要时可以附带文档。');
+    }
+  }
+
+  async loadCurrentDirectory() {
+    try {
+      const response = await this.api.get('/api/files/cwd');
+      const cwdElement = this.element.querySelector('#chat-cwd');
+      if (cwdElement) {
+        cwdElement.textContent = `当前目录: ${response.cwd}`;
+      }
+    } catch (error) {
+      console.error('Failed to load current directory:', error);
+      const cwdElement = this.element.querySelector('#chat-cwd');
+      if (cwdElement) {
+        cwdElement.textContent = '当前目录: 加载失败';
+      }
     }
   }
 
@@ -168,6 +189,16 @@ export class ChatModule extends BaseModule {
       try {
         const stage = JSON.parse(data);
         const message = stage.message || '处理中';
+        
+        // Save process logs
+        if (!this.processLogs.has(messageIndex)) {
+          this.processLogs.set(messageIndex, []);
+        }
+        this.processLogs.get(messageIndex).push(`${stage.stage}: ${message}`);
+        
+        // Update current progress
+        this.currentProgress.set(messageIndex, { stage: stage.stage, message: message, timestamp: Date.now() });
+        
         this.updateMessage(messageIndex, '思考中…', `进行中：${message}`);
       } catch (e) {
         console.warn('Failed to parse stage event:', e);
@@ -222,6 +253,15 @@ export class ChatModule extends BaseModule {
       }
     }
     
+    // Add triggered tasks and tools
+    if (result.tasks && Array.isArray(result.tasks)) {
+      parts.push(`tasks: ${result.tasks.join(', ') || 'none'}`);
+    }
+    
+    if (result.tools && Array.isArray(result.tools)) {
+      parts.push(`tools: ${result.tools.join(', ') || 'none'}`);
+    }
+    
     return parts.join(' · ');
   }
 
@@ -253,7 +293,7 @@ export class ChatModule extends BaseModule {
 
     container.innerHTML = '';
     
-    this.messages.forEach(message => {
+    this.messages.forEach((message, index) => {
       const messageEl = this.createElement('div', `message ${message.role}`);
       
       const bubble = this.createElement('div', 'message-bubble');
@@ -276,6 +316,36 @@ export class ChatModule extends BaseModule {
     
     // Scroll to bottom
     container.scrollTop = container.scrollHeight;
+    
+    // Render process logs in sidebar
+    this.renderLogs();
+  }
+  
+  renderLogs() {
+    const logsContainer = this.element?.querySelector('#chat-logs');
+    if (!logsContainer) return;
+    
+    logsContainer.innerHTML = '';
+    
+    // Get logs for the latest message
+    const latestIndex = this.messages.length - 1;
+    const logs = this.processLogs.get(latestIndex);
+    
+    if (logs && logs.length > 0) {
+      const logList = this.createElement('ul', 'message-logs-list');
+      logs.forEach(log => {
+        // Check if this log is the current progress
+        const progress = this.currentProgress.get(latestIndex);
+        const isCurrentProgress = progress && log.includes(progress.stage);
+        
+        const logItem = this.createElement('li', `message-logs-item ${isCurrentProgress ? 'current-progress' : ''}`, log);
+        logList.appendChild(logItem);
+      });
+      logsContainer.appendChild(logList);
+    } else {
+      const emptyMessage = this.createElement('div', 'empty-logs', '暂无处理过程日志');
+      logsContainer.appendChild(emptyMessage);
+    }
   }
 
   renderMarkdown(text) {

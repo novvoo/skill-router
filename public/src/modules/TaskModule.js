@@ -269,33 +269,35 @@ export class TaskModule extends BaseModule {
     let endpoint, taskData;
     
     if (formData.taskType === 'agent') {
-      if (!formData.agentPrompt) {
-        this.showStatus('请填写Agent提示词', true);
-        return;
+        if (!formData.agentPrompt) {
+          this.showStatus('请填写Agent提示词', true);
+          return;
+        }
+        
+        endpoint = '/api/tasks/agent';
+        taskData = {
+          agentType: formData.agentType || 'general',
+          prompt: formData.agentPrompt,
+          description: formData.description,
+          priority: formData.priority || 'normal',
+          background: Boolean(formData.background),
+          workingDir: formData.workingDir || ''
+        };
+      } else {
+        if (!formData.shellCommand) {
+          this.showStatus('请填写Shell命令', true);
+          return;
+        }
+        
+        endpoint = '/api/tasks/shell';
+        taskData = {
+          command: formData.shellCommand,
+          description: formData.description,
+          priority: formData.priority || 'normal',
+          background: Boolean(formData.background),
+          workingDir: formData.workingDir || ''
+        };
       }
-      
-      endpoint = '/api/tasks/agent';
-      taskData = {
-        agentType: formData.agentType || 'general',
-        prompt: formData.agentPrompt,
-        description: formData.description,
-        priority: formData.priority || 'normal',
-        background: Boolean(formData.background)
-      };
-    } else {
-      if (!formData.shellCommand) {
-        this.showStatus('请填写Shell命令', true);
-        return;
-      }
-      
-      endpoint = '/api/tasks/shell';
-      taskData = {
-        command: formData.shellCommand,
-        description: formData.description,
-        priority: formData.priority || 'normal',
-        background: Boolean(formData.background)
-      };
-    }
 
     this.showLoading(true);
     try {

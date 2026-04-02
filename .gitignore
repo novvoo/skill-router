@@ -7,3 +7,4 @@ dist/
 .cache
 output
 temp
+test-dir/

@@ -569,11 +569,67 @@ body {
 }
 
 /* Chat Interface */
-.chat-container {
+.chat-layout {
+  display: flex;
+  gap: var(--spacing-lg);
+  height: calc(100vh - 200px);
+  min-height: 400px;
+}
+
+.chat-main {
+  flex: 1;
   display: flex;
   flex-direction: column;
-  height: calc(100vh - 200px);
   gap: var(--spacing-lg);
+}
+
+.chat-sidebar {
+  width: 350px;
+  background: var(--bg-card);
+  border: 1px solid var(--border-primary);
+  border-radius: var(--radius-lg);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  box-shadow: var(--shadow-sm);
+}
+
+.sidebar-header {
+  padding: var(--spacing-md) var(--spacing-lg);
+  border-bottom: 1px solid var(--border-primary);
+  background: var(--bg-tertiary);
+}
+
+.sidebar-header h3 {
+  margin: 0;
+  font-size: 0.875rem;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.chat-logs {
+  flex: 1;
+  padding: var(--spacing-md);
+  overflow-y: auto;
+}
+
+/* Custom scrollbar for chat logs */
+.chat-logs::-webkit-scrollbar {
+  width: 6px;
+}
+
+.chat-logs::-webkit-scrollbar-track {
+  background: var(--bg-tertiary);
+  border-radius: var(--radius-sm);
+}
+
+.chat-logs::-webkit-scrollbar-thumb {
+  background: var(--border-secondary);
+  border-radius: var(--radius-sm);
+}
+
+.chat-logs::-webkit-scrollbar-thumb:hover {
+  background: var(--border-primary);
 }
 
 .chat-messages {
@@ -1366,3 +1422,65 @@ body {
     display: none;
   }
 }
+
+/* Process Logs Styles */
+.empty-logs {
+  color: var(--text-muted);
+  font-style: italic;
+  text-align: center;
+  padding: var(--spacing-xl);
+  font-size: 0.75rem;
+}
+
+.message-logs-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+
+.message-logs-item {
+  color: var(--text-muted);
+  padding: var(--spacing-sm) 0;
+  border-bottom: 1px solid var(--border-secondary);
+  transition: all var(--transition-fast);
+  display: flex;
+  align-items: flex-start;
+  gap: var(--spacing-sm);
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.message-logs-item:last-child {
+  border-bottom: none;
+}
+
+.message-logs-item::before {
+  content: "▸";
+  font-size: 0.6rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  width: 12px;
+  margin-top: 2px;
+}
+
+.message-logs-item.current-progress {
+  color: var(--text-primary);
+  font-weight: 600;
+  background-color: rgba(59, 130, 246, 0.1);
+  padding-left: var(--spacing-sm);
+  border-left: 3px solid var(--primary);
+  margin-left: -var(--spacing-sm);
+  margin-right: -var(--spacing-sm);
+  padding-right: var(--spacing-sm);
+  border-radius: var(--radius-sm);
+  padding-top: var(--spacing-sm);
+  padding-bottom: var(--spacing-sm);
+}
+
+.message-logs-item.current-progress::before {
+  content: "▶";
+  color: var(--primary);
+  font-weight: bold;
+  margin-top: 2px;
+}
+

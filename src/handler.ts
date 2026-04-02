@@ -564,7 +564,7 @@ async function readRequestBody(req: http.IncomingMessage, maxBytes: number) {
   return Buffer.concat(chunks);
 }
 
-async function readJsonBody(req: http.IncomingMessage, maxBytes: number) {
+export async function readJsonBody(req: http.IncomingMessage, maxBytes: number) {
   const ct = String(req.headers["content-type"] || "");
   if (!ct.toLowerCase().includes("application/json")) throw new Error("Content-Type must be application/json");
   const raw = await readRequestBody(req, maxBytes);
@@ -1827,6 +1827,8 @@ async function runWithRouting(
     ];
     onProgress?.({ stage: "chat", message: "生成回复" });
     
+    const usedTools = new Set<string>();
+    
     const result = toolsEnabled && toolExecutor 
       ? await chatCompletionsWithTools(config, { 
           messages: promptMessages, 
@@ -1834,7 +1836,13 @@ async function runWithRouting(
           tools: toolExecutor.getToolSchemas(),
           toolExecutor,
           sessionId,
-          onProgress,
+          onProgress: (e) => {
+            // Track used tools from progress events
+            if (e.stage === "tool_progress" && e.data?.toolName) {
+              usedTools.add(e.data.toolName);
+            }
+            onProgress?.(e);
+          },
           abortController: new AbortController(),
         })
       : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
@@ -1850,7 +1858,9 @@ async function runWithRouting(
     return {
       chosen,
       skill: null,
-      used_skills: [],
+      used_skills: Array.from(usedTools),
+      tasks: [], // Add tasks field
+      tools: Array.from(usedTools), // Add tools field with actual used tools
       response: content,
       summary,
       summarized: compressed.summarized,
@@ -2336,6 +2346,30 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
         if (req.method === "DELETE") {
           return await taskAPI.killTask(req, res, taskId);
         }
+      }
+    }
+
+    // 文件系统API路由
+    if (url.pathname.startsWith("/api/files")) {
+      
+      if (req.method === "GET" && url.pathname === "/api/files") {
+        return await handleFilesList(req, res);
+      }
+      
+      if (req.method === "GET" && url.pathname === "/api/files/cwd") {
+        return await handleFilesCwd(req, res);
+      }
+      
+      if (req.method === "POST" && url.pathname === "/api/files/cwd") {
+        return await handleFilesSetCwd(req, res);
+      }
+      
+      if (req.method === "POST" && url.pathname === "/api/files/directory") {
+        return await handleFilesCreateDirectory(req, res);
+      }
+      
+      if (req.method === "POST" && url.pathname === "/api/files/file") {
+        return await handleFilesCreateFile(req, res);
       }
     }
 
@@ -3425,6 +3459,123 @@ export async function handleRequest(req: http.IncomingMessage, res: http.ServerR
     return sendJson(res, 404, { error: "Not Found" });
   } catch (e: any) {
     return sendJson(res, 500, { error: String(e?.message || e) });
+  }
+}
+
+// 文件系统API处理函数
+async function handleFilesList(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const url = new URL(req.url || '', `http://${req.headers.host}`);
+    const pathParam = url.searchParams.get('path') || process.cwd();
+    const safePath = path.resolve(pathParam);
+    
+    // 安全检查：确保路径在当前工作目录内
+    const cwd = process.cwd();
+    if (!safePath.startsWith(cwd)) {
+      return sendJson(res, 403, { error: 'Access denied' });
+    }
+    
+    const entries = readdirSync(safePath, { withFileTypes: true });
+    const files = entries.map(entry => {
+      const entryPath = path.join(safePath, entry.name);
+      const stat = statSync(entryPath);
+      return {
+        name: entry.name,
+        path: entryPath,
+        type: entry.isDirectory() ? 'directory' : 'file',
+        size: stat.size,
+        mtime: stat.mtime.getTime()
+      };
+    });
+    
+    sendJson(res, 200, { files });
+  } catch (error: any) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleFilesCwd(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    sendJson(res, 200, { cwd: process.cwd() });
+  } catch (error: any) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleFilesSetCwd(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const body = await readJsonBody(req, 10 * 1024);
+    const { path: newPath } = body;
+    
+    if (!newPath) {
+      return sendJson(res, 400, { error: 'Path is required' });
+    }
+    
+    const safePath = path.resolve(newPath);
+    
+    // 安全检查：确保路径存在且是目录
+    if (!existsSync(safePath) || !statSync(safePath).isDirectory()) {
+      return sendJson(res, 400, { error: 'Invalid directory path' });
+    }
+    
+    process.chdir(safePath);
+    sendJson(res, 200, { cwd: process.cwd() });
+  } catch (error: any) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleFilesCreateDirectory(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const body = await readJsonBody(req, 10 * 1024);
+    const { name, path: parentPath } = body;
+    
+    if (!name) {
+      return sendJson(res, 400, { error: 'Directory name is required' });
+    }
+    
+    const parentDir = parentPath || process.cwd();
+    const safeParent = path.resolve(parentDir);
+    const newDirPath = path.join(safeParent, name);
+    
+    // 安全检查：确保路径在当前工作目录内
+    const cwd = process.cwd();
+    if (!newDirPath.startsWith(cwd)) {
+      return sendJson(res, 403, { error: 'Access denied' });
+    }
+    
+    mkdirSync(newDirPath, { recursive: true });
+    sendJson(res, 200, { path: newDirPath });
+  } catch (error: any) {
+    sendJson(res, 500, { error: error.message });
+  }
+}
+
+async function handleFilesCreateFile(req: http.IncomingMessage, res: http.ServerResponse) {
+  try {
+    const body = await readJsonBody(req, 10 * 1024);
+    const { name, path: parentPath, content = '' } = body;
+    
+    if (!name) {
+      return sendJson(res, 400, { error: 'File name is required' });
+    }
+    
+    const parentDir = parentPath || process.cwd();
+    const safeParent = path.resolve(parentDir);
+    const newFilePath = path.join(safeParent, name);
+    
+    // 安全检查：确保路径在当前工作目录内
+    const cwd = process.cwd();
+    if (!newFilePath.startsWith(cwd)) {
+      return sendJson(res, 403, { error: 'Access denied' });
+    }
+    
+    // 创建父目录（如果不存在）
+    mkdirSync(path.dirname(newFilePath), { recursive: true });
+    writeFileSync(newFilePath, content, 'utf8');
+    sendJson(res, 200, { path: newFilePath });
+  } catch (error: any) {
+    sendJson(res, 500, { error: error.message });
   }
 }
 

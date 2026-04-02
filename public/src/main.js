@@ -9,6 +9,7 @@ import { TaskModule } from './modules/TaskModule.js';
 import { MemoryModule } from './modules/MemoryModule.js';
 import { SettingsModule } from './modules/SettingsModule.js';
 import { TerminalModule } from './modules/TerminalModule.js';
+import { FilesModule } from './modules/FilesModule.js';
 import { notifications } from './utils/notifications.js';
 
 class App {
@@ -30,6 +31,7 @@ class App {
     this.modules.set('tasks', new TaskModule(this.api, this.config));
     this.modules.set('memory', new MemoryModule(this.api, this.config));
     this.modules.set('settings', new SettingsModule(this.api, this.config));
+    this.modules.set('files', new FilesModule(this.api, this.config));
     this.modules.set('terminal', new TerminalModule(this.api, this.config));
 
     // Setup routes
@@ -52,6 +54,7 @@ class App {
     this.router.addRoute('/tasks', () => this.showModule('tasks'));
     this.router.addRoute('/memory', () => this.showModule('memory'));
     this.router.addRoute('/settings', () => this.showModule('settings'));
+    this.router.addRoute('/files', () => this.showModule('files'));
     this.router.addRoute('/terminal', () => this.showModule('terminal'));
   }
 
@@ -184,6 +187,10 @@ class App {
           case '7':
             e.preventDefault();
             this.router.navigate('/terminal');
+            break;
+          case '8':
+            e.preventDefault();
+            this.router.navigate('/files');
             break;
         }
       }

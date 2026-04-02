@@ -74,12 +74,19 @@ export class ToolModule extends BaseModule {
           <button class="btn-primary execute-tool-btn" data-tool-name="${tool.name}">
             执行
           </button>
+          <button class="btn-secondary test-tool-btn" data-tool-name="${tool.name}">
+            测试样例
+          </button>
         </div>
       `;
       
       // Add execute button event listener
       const executeBtn = card.querySelector('.execute-tool-btn');
       executeBtn.addEventListener('click', () => this.showExecuteModal(tool));
+      
+      // Add test button event listener
+      const testBtn = card.querySelector('.test-tool-btn');
+      testBtn.addEventListener('click', () => this.showTestExamples(tool));
       
       container.appendChild(card);
     });
@@ -166,6 +173,228 @@ export class ToolModule extends BaseModule {
     const modal = this.element.querySelector('#execute-tool-modal');
     modal.style.display = 'none';
     this.selectedTool = null;
+  }
+
+  showTestExamples(tool) {
+    const modal = this.createElement('div', 'modal');
+    modal.id = 'tool-test-examples-modal';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>${tool.name} - 测试样例</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <div id="test-examples-content"></div>
+        </div>
+      </div>
+    `;
+    
+    document.body.appendChild(modal);
+    
+    const content = modal.querySelector('#test-examples-content');
+    content.innerHTML = this.getToolTestExamples(tool.name);
+    
+    // Add close button event listener
+    const closeBtn = modal.querySelector('.modal-close');
+    closeBtn.addEventListener('click', () => modal.remove());
+    
+    // Add click outside to close
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+    
+    // Add copy example button event listeners
+    modal.querySelectorAll('.copy-example-btn').forEach(button => {
+      button.addEventListener('click', async (e) => {
+        const example = e.target.getAttribute('data-example');
+        try {
+          await navigator.clipboard.writeText(example);
+          this.showStatus('测试样例已复制到剪贴板', false);
+        } catch (err) {
+          console.error('无法复制到剪贴板:', err);
+          this.showStatus('复制失败', true);
+        }
+      });
+    });
+    
+    // Add execute example button event listeners
+    modal.querySelectorAll('.execute-example-btn').forEach(button => {
+      button.addEventListener('click', async (e) => {
+        const toolName = e.target.getAttribute('data-tool');
+        const paramsStr = e.target.getAttribute('data-params');
+        
+        try {
+          const params = JSON.parse(paramsStr);
+          
+          // Find the tool in available tools
+          const tool = this.availableTools.find(t => t.name === toolName);
+          if (!tool) {
+            this.showStatus(`工具 ${toolName} 不存在`, true);
+            return;
+          }
+          
+          // Close the test examples modal
+          modal.remove();
+          
+          // Show the execute modal with the example params
+          this.showExecuteModal(tool);
+          
+          // Fill the form with the example params
+          const form = this.element.querySelector('#tool-execute-form');
+          Object.entries(params).forEach(([key, value]) => {
+            const input = form.querySelector(`[name="${key}"]`);
+            if (input) {
+              if (input.type === 'checkbox') {
+                input.checked = value;
+              } else if (input.type === 'number') {
+                input.value = value;
+              } else if (input.tagName === 'TEXTAREA') {
+                if (typeof value === 'object') {
+                  input.value = JSON.stringify(value, null, 2);
+                } else {
+                  input.value = value;
+                }
+              } else {
+                input.value = value;
+              }
+            }
+          });
+          
+        } catch (err) {
+          console.error('执行测试样例失败:', err);
+          this.showStatus('执行测试样例失败', true);
+        }
+      });
+    });
+    
+    modal.style.display = 'block';
+  }
+
+  getToolTestExamples(toolName) {
+    const examples = {
+      'bash': `
+        <div class="test-example">
+          <h4>测试样例 1: 列出当前目录内容</h4>
+          <pre class="code-block">ls -la</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example="ls -la">复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="bash" data-params="{\"command\": \"ls -la\"}">执行</button>
+          </div>
+        </div>
+        
+        <div class="test-example">
+          <h4>测试样例 2: 创建一个新文件</h4>
+          <pre class="code-block">echo "Hello, World!" > test.txt</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example="echo \"Hello, World!\" > test.txt">复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="bash" data-params="{\"command\": \"echo \"Hello, World!\" > test.txt\"}">执行</button>
+          </div>
+        </div>
+        
+        <div class="test-example">
+          <h4>测试样例 3: 查看文件内容</h4>
+          <pre class="code-block">cat test.txt</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example="cat test.txt">复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="bash" data-params="{\"command\": \"cat test.txt\"}">执行</button>
+          </div>
+        </div>
+      `,
+      'file_read': `
+        <div class="test-example">
+          <h4>测试样例 1: 读取文件内容</h4>
+          <pre class="code-block">{
+  "path": "test.txt"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"path": "test.txt"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="file_read" data-params='{"path": "test.txt"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'file_write': `
+        <div class="test-example">
+          <h4>测试样例 1: 写入文件</h4>
+          <pre class="code-block">{
+  "path": "output.txt",
+  "content": "Hello from file_write tool!",
+  "create_dirs": true
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"path": "output.txt", "content": "Hello from file_write tool!", "create_dirs": true}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="file_write" data-params='{"path": "output.txt", "content": "Hello from file_write tool!", "create_dirs": true}'>执行</button>
+          </div>
+        </div>
+      `,
+      'file_edit': `
+        <div class="test-example">
+          <h4>测试样例 1: 编辑文件</h4>
+          <pre class="code-block">{
+  "path": "test.txt",
+  "old_str": "Hello",
+  "new_str": "Hello, World!"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"path": "test.txt", "old_str": "Hello", "new_str": "Hello, World!"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="file_edit" data-params='{"path": "test.txt", "old_str": "Hello", "new_str": "Hello, World!"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'grep': `
+        <div class="test-example">
+          <h4>测试样例 1: 搜索文件内容</h4>
+          <pre class="code-block">{
+  "pattern": "Hello",
+  "path": "test.txt"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"pattern": "Hello", "path": "test.txt"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="grep" data-params='{"pattern": "Hello", "path": "test.txt"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'glob': `
+        <div class="test-example">
+          <h4>测试样例 1: 匹配文件路径</h4>
+          <pre class="code-block">{
+  "pattern": "*.txt"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"pattern": "*.txt"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="glob" data-params='{"pattern": "*.txt"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'web_search': `
+        <div class="test-example">
+          <h4>测试样例 1: 搜索网络信息</h4>
+          <pre class="code-block">{
+  "query": "Skill-Router"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"query": "Skill-Router"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="web_search" data-params='{"query": "Skill-Router"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'web_fetch': `
+        <div class="test-example">
+          <h4>测试样例 1: 获取网页内容</h4>
+          <pre class="code-block">{
+  "url": "https://example.com"
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"url": "https://example.com"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="web_fetch" data-params='{"url": "https://example.com"}'>执行</button>
+          </div>
+        </div>
+      `
+    };
+    
+    return examples[toolName] || '<p>暂无测试样例</p>';
   }
 
   async executeTool() {

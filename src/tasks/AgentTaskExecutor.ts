@@ -9,6 +9,7 @@ export interface AgentTaskOptions extends TaskCreateOptions {
   model?: string
   background?: boolean
   retain?: boolean
+  workingDir?: string
 }
 
 export interface AgentProgress {
@@ -77,6 +78,7 @@ export class AgentTaskExecutor extends EventEmitter {
           background: options.background || false,
           model: options.model || model,
           sessionId: taskId,
+          workingDir: options.workingDir,
           // 传递OpenAI配置
           openaiConfig: {
             apiKey,

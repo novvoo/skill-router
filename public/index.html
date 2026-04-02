@@ -50,6 +50,11 @@
           <span class="nav-text">设置</span>
           <span class="nav-shortcut">Ctrl+6</span>
         </a>
+        <a href="#" class="nav-item" data-route="files">
+          <span class="nav-icon">📁</span>
+          <span class="nav-text">文件</span>
+          <span class="nav-shortcut">Ctrl+8</span>
+        </a>
         <a href="#" class="nav-item" data-route="terminal">
           <span class="nav-icon">💻</span>
           <span class="nav-text">终端</span>
@@ -64,30 +69,42 @@
       <div id="chat-page" class="page">
         <div class="page-header">
           <h2>智能对话</h2>
+          <div class="cwd-info">
+            <span id="chat-cwd" class="cwd-text">加载中...</span>
+          </div>
           <button id="new-chat-btn" class="btn-secondary">新对话</button>
         </div>
         
-        <div class="chat-container">
-          <div id="chat-messages" class="chat-messages"></div>
+        <div class="chat-layout">
+          <div class="chat-main">
+            <div id="chat-messages" class="chat-messages"></div>
+            
+            <div class="chat-input-container">
+              <div class="input-group">
+                <label for="chat-input">输入消息</label>
+                <textarea id="chat-input" placeholder="描述你的任务..." rows="3"></textarea>
+                <div id="chat-preview" class="preview-area" style="display: none;"></div>
+              </div>
+              
+              <div class="input-group">
+                <label for="chat-file-input">文档（可选）</label>
+                <input id="chat-file-input" type="file" multiple>
+              </div>
+              
+              <div class="input-actions">
+                <button id="chat-send" class="btn-primary">发送</button>
+                <button id="chat-preview-btn" class="btn-secondary">预览</button>
+              </div>
+              
+              <div class="status-message"></div>
+            </div>
+          </div>
           
-          <div class="chat-input-container">
-            <div class="input-group">
-              <label for="chat-input">输入消息</label>
-              <textarea id="chat-input" placeholder="描述你的任务..." rows="3"></textarea>
-              <div id="chat-preview" class="preview-area" style="display: none;"></div>
+          <div class="chat-sidebar">
+            <div class="sidebar-header">
+              <h3>处理过程</h3>
             </div>
-            
-            <div class="input-group">
-              <label for="chat-file-input">文档（可选）</label>
-              <input id="chat-file-input" type="file" multiple>
-            </div>
-            
-            <div class="input-actions">
-              <button id="chat-send" class="btn-primary">发送</button>
-              <button id="chat-preview-btn" class="btn-secondary">预览</button>
-            </div>
-            
-            <div class="status-message"></div>
+            <div id="chat-logs" class="chat-logs"></div>
           </div>
         </div>
       </div>
@@ -293,6 +310,12 @@
               </label>
             </div>
 
+            <div class="form-group">
+              <label for="task-working-dir">工作目录</label>
+              <input type="text" id="task-working-dir" name="workingDir" placeholder="输入工作目录路径...">
+              <small class="form-hint">留空使用当前工作目录</small>
+            </div>
+
             <div class="form-actions">
               <button id="submit-task-btn" type="button" class="btn-primary">创建任务</button>
               <button id="cancel-task-btn" type="button" class="btn-secondary">取消</button>
@@ -454,6 +477,116 @@
           </div>
           
           <div id="ocr-status" class="status-container"></div>
+        </div>
+
+        <div class="loading" style="display: none;">加载中...</div>
+        <div class="status-message"></div>
+      </div>
+
+      <!-- Files Page -->
+      <div id="files-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>文件管理</h2>
+          <div class="page-actions">
+            <button id="refresh-files" class="btn-secondary">刷新</button>
+            <button id="create-directory-btn" class="btn-primary">创建目录</button>
+            <button id="create-file-btn" class="btn-secondary">创建文件</button>
+          </div>
+        </div>
+
+        <!-- Current Working Directory -->
+        <div class="section">
+          <div class="cwd-display">
+            <h3>当前工作目录</h3>
+            <div class="cwd-path" id="current-cwd">加载中...</div>
+            <div class="cwd-actions">
+              <button id="set-cwd-btn" class="btn-secondary">设置工作目录</button>
+            </div>
+          </div>
+        </div>
+
+        <!-- Directory Content -->
+        <div class="section">
+          <h3>目录内容</h3>
+          <div id="directory-content" class="list-container"></div>
+        </div>
+
+        <!-- Create Directory Modal -->
+        <div id="create-directory-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>创建目录</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="create-directory-form">
+                <div class="form-group">
+                  <label for="directory-name">目录名称</label>
+                  <input type="text" id="directory-name" placeholder="输入目录名称...">
+                </div>
+                <div class="form-group">
+                  <label for="directory-path">父目录路径</label>
+                  <input type="text" id="directory-path" placeholder="输入父目录路径...">
+                </div>
+                <div class="form-actions">
+                  <button id="submit-directory-btn" type="button" class="btn-primary">创建</button>
+                  <button id="cancel-directory-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Create File Modal -->
+        <div id="create-file-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>创建文件</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="create-file-form">
+                <div class="form-group">
+                  <label for="file-name">文件名称</label>
+                  <input type="text" id="file-name" placeholder="输入文件名称...">
+                </div>
+                <div class="form-group">
+                  <label for="file-path">目录路径</label>
+                  <input type="text" id="file-path" placeholder="输入目录路径...">
+                </div>
+                <div class="form-group">
+                  <label for="file-content">文件内容</label>
+                  <textarea id="file-content" placeholder="输入文件内容..." rows="4"></textarea>
+                </div>
+                <div class="form-actions">
+                  <button id="submit-file-btn" type="button" class="btn-primary">创建</button>
+                  <button id="cancel-file-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Set CWD Modal -->
+        <div id="set-cwd-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>设置工作目录</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="set-cwd-form">
+                <div class="form-group">
+                  <label for="new-cwd">工作目录路径</label>
+                  <input type="text" id="new-cwd" placeholder="输入工作目录路径...">
+                </div>
+                <div class="form-actions">
+                  <button id="submit-cwd-btn" type="button" class="btn-primary">设置</button>
+                  <button id="cancel-cwd-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
         </div>
 
         <div class="loading" style="display: none;">加载中...</div>

@@ -23,6 +23,7 @@ export interface SpawnOptions {
   name?: string
   timeout?: number
   sessionId?: string
+  workingDir?: string
   onProgress?: (progress: AgentProgress) => void
   openaiConfig?: OpenAIConfig
 }
