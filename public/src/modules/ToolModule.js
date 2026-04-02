@@ -242,26 +242,28 @@ export class ToolModule extends BaseModule {
           // Show the execute modal with the example params
           this.showExecuteModal(tool);
           
-          // Fill the form with the example params
-          const form = this.element.querySelector('#tool-execute-form');
-          Object.entries(params).forEach(([key, value]) => {
-            const input = form.querySelector(`[name="${key}"]`);
-            if (input) {
-              if (input.type === 'checkbox') {
-                input.checked = value;
-              } else if (input.type === 'number') {
-                input.value = value;
-              } else if (input.tagName === 'TEXTAREA') {
-                if (typeof value === 'object') {
-                  input.value = JSON.stringify(value, null, 2);
+          // Fill the form with the example params after a short delay to ensure form fields are generated
+          setTimeout(() => {
+            const form = this.element.querySelector('#tool-execute-form');
+            Object.entries(params).forEach(([key, value]) => {
+              const input = form.querySelector(`[name="${key}"]`);
+              if (input) {
+                if (input.type === 'checkbox') {
+                  input.checked = value;
+                } else if (input.type === 'number') {
+                  input.value = value;
+                } else if (input.tagName === 'TEXTAREA') {
+                  if (typeof value === 'object') {
+                    input.value = JSON.stringify(value, null, 2);
+                  } else {
+                    input.value = value;
+                  }
                 } else {
                   input.value = value;
                 }
-              } else {
-                input.value = value;
               }
-            }
-          });
+            });
+          }, 100);
           
         } catch (err) {
           console.error('执行测试样例失败:', err);
@@ -290,7 +292,7 @@ export class ToolModule extends BaseModule {
           <pre class="code-block">echo "Hello, World!" > test.txt</pre>
           <div class="example-actions">
             <button class="btn-secondary copy-example-btn" data-example="echo \"Hello, World!\" > test.txt">复制</button>
-            <button class="btn-primary execute-example-btn" data-tool="bash" data-params="{\"command\": \"echo \"Hello, World!\" > test.txt\"}">执行</button>
+            <button class="btn-primary execute-example-btn" data-tool="bash" data-params='{"command": "echo \"Hello, World!\" > test.txt"}'>执行</button>
           </div>
         </div>
         

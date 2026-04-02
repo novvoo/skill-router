@@ -73,8 +73,8 @@ function executeCommand(
     
     // Determine shell based on platform
     const isWindows = process.platform === 'win32'
-    const shell = isWindows ? 'cmd' : 'bash'
-    const shellArgs = isWindows ? ['/c'] : ['-c']
+    const shell = isWindows ? 'powershell' : 'bash'
+    const shellArgs = isWindows ? ['-Command'] : ['-c']
     
     const child = spawn(shell, [...shellArgs, command], {
       cwd: options.cwd || process.cwd(),

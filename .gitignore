@@ -8,3 +8,4 @@ dist/
 output
 temp
 test-dir/
+.task-output/

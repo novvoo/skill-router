@@ -253,6 +253,12 @@ export class ChatModule extends BaseModule {
       }
     }
     
+    // Add system information
+    if (result.system) {
+      const sys = result.system;
+      parts.push(`system: ${sys.platform}/${sys.arch}`);
+    }
+    
     // Add triggered tasks and tools
     if (result.tasks && Array.isArray(result.tasks)) {
       parts.push(`tasks: ${result.tasks.join(', ') || 'none'}`);

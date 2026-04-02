@@ -2,6 +2,7 @@ import { z } from 'zod'
 import { readFile, stat } from 'fs/promises'
 import { buildTool, type ToolDef } from './Tool.js'
 import path from 'path'
+import * as opendataloaderPdf from '@opendataloader/pdf'
 
 const inputSchema = z.object({
   path: z.string().describe('Path to the file to read'),
@@ -152,9 +153,63 @@ export const FileReadTool = buildTool({
         }
       }
       
-      // Read file content
-      const content = await readFile(filePath, { encoding: encoding as BufferEncoding })
-      const lines = content.split('\n')
+      let content: string
+      let lines: string[]
+      
+      // Check if file is PDF
+      if (filePath.toLowerCase().endsWith('.pdf')) {
+        // Use opendataloaderPdf to extract text from PDF
+        const textFilePath = filePath.replace('.pdf', '.txt')
+        
+        try {
+          await opendataloaderPdf.convert(filePath, {
+            format: 'text'
+          })
+          
+          // Read the generated text file
+          content = await readFile(textFilePath, { encoding: encoding as BufferEncoding })
+          
+          // Ensure content is a string before using split
+          if (typeof content !== 'string') {
+            content = String(content)
+          }
+          
+          lines = content.split('\n')
+        } catch (pdfError) {
+          console.warn('PDF conversion failed:', pdfError)
+          // 转换失败时返回错误信息
+          return {
+            data: {
+              content: '',
+              path: filePath,
+              size: stats.size,
+              lines: 0,
+              encoding,
+            },
+            error: `Failed to read PDF file: ${pdfError instanceof Error ? pdfError.message : String(pdfError)}`,
+          }
+        } finally {
+          // 清理生成的临时文本文件
+          try {
+            const fs = await import('fs')
+            if (fs.existsSync(textFilePath)) {
+              fs.unlinkSync(textFilePath)
+            }
+          } catch (cleanupError) {
+            console.warn('Failed to clean up temporary text file:', cleanupError)
+          }
+        }
+      } else {
+        // Read as regular text file
+        content = await readFile(filePath, { encoding: encoding as BufferEncoding })
+        
+        // Ensure content is a string before using split
+        if (typeof content !== 'string') {
+          content = String(content)
+        }
+        
+        lines = content.split('\n')
+      }
       
       onProgress?.({
         toolUseID: 'file-read',

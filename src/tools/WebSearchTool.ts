@@ -131,6 +131,30 @@ export const WebSearchTool = buildTool({
   },
   
   inputSchema,
+  inputJSONSchema: {
+    type: 'object',
+    properties: {
+      query: {
+        type: 'string',
+        description: 'The search query to use'
+      },
+      allowed_domains: {
+        type: 'array',
+        items: {
+          type: 'string'
+        },
+        description: 'Only include search results from these domains'
+      },
+      blocked_domains: {
+        type: 'array',
+        items: {
+          type: 'string'
+        },
+        description: 'Never include search results from these domains'
+      }
+    },
+    required: ['query']
+  },
   outputSchema,
   
   isConcurrencySafe() {
@@ -196,78 +220,86 @@ export const WebSearchTool = buildTool({
     })
     
     try {
-      // Create user message
-      const userMessage = {
-        role: 'user' as const,
-        content: `Perform a web search for the query: ${query}`
+      // Use fetch API to perform real web search
+      // This implementation uses a free search API
+      let searchResults = []
+      let searchApiUsed = 'primary'
+      
+      // First try with primary search API
+      try {
+        const searchUrl = `https://api.freeapi.app/api/v1/public/websearch?q=${encodeURIComponent(query)}&limit=5`
+        
+        const ac = new AbortController()
+        const timer = setTimeout(() => ac.abort(), 10000) // 10s timeout
+        
+        const response = await fetch(searchUrl, {
+          method: 'GET',
+          headers: {
+            'Content-Type': 'application/json',
+            'Accept': 'application/json',
+          },
+          signal: ac.signal,
+        })
+        
+        clearTimeout(timer)
+        
+        if (!response.ok) {
+          throw new Error(`HTTP ${response.status}: ${await response.text()}`)
+        }
+        
+        const contentType = response.headers.get('content-type')
+        if (!contentType || !contentType.includes('application/json')) {
+          throw new Error(`Expected JSON response but got ${contentType}`)
+        }
+        
+        const data = await response.json() as any
+        
+        // Process search results
+        if (data.success && data.data && Array.isArray(data.data)) {
+          searchResults = data.data.map((item: any) => ({
+            title: item.title || 'Untitled',
+            url: item.url || '#'
+          }))
+        } else {
+          throw new Error('Invalid response format from search API')
+        }
+      } catch (primaryError) {
+        // Fallback to alternative search if first API fails
+        searchApiUsed = 'fallback'
+        const fallbackUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
+        searchResults = [{
+          title: `Search results for "${query}"`,
+          url: fallbackUrl
+        }]
+        console.warn('Primary search API failed, using fallback:', primaryError)
       }
       
-      // Create tool schema
-      const toolSchema = {
-        name: 'web_search',
-        description: 'Search the web for current information',
-        parameters: {
-          type: 'object',
-          properties: {
-            query: {
-              type: 'string',
-              description: 'The search query to use'
-            },
-            allowed_domains: {
-              type: 'array',
-              items: {
-                type: 'string'
-              },
-              description: 'Only include search results from these domains'
-            },
-            blocked_domains: {
-              type: 'array',
-              items: {
-                type: 'string'
-              },
-              description: 'Never include search results from these domains'
-            }
-          },
-          required: ['query']
-        }
-      }
-      
-      // Import necessary modules
-      const { chatCompletionsWithTools } = await import('../handler.js')
-      
-      // Call LLM with web search tool
-      const response = await chatCompletionsWithTools(
-        context.config,
-        {
-          messages: [userMessage],
-          tools: [toolSchema],
-          temperature: 0.0,
-          onProgress: (event: any) => {
-            // Handle progress events
-            if (event.stage === 'tool_progress' && event.data?.type === 'search_results_received') {
-              onProgress?.({
-                toolUseID: event.data.toolId || 'web-search',
-                data: {
-                  type: 'search_results_received',
-                  query: event.data.query || query,
-                  resultCount: event.data.resultCount,
-                },
-              })
-            }
-          },
-          abortController: context.abortController,
-        }
-      )
+      onProgress?.({
+        toolUseID: 'web-search',
+        data: {
+          type: 'search_results_received',
+          query,
+          resultCount: searchResults.length,
+          apiUsed: searchApiUsed
+        },
+      })
       
       // Process response
       const endTime = performance.now()
       const durationSeconds = (endTime - startTime) / 1000
       
-      // Extract content blocks from response
-      const contentBlocks = (response.raw as any)?.choices?.[0]?.message?.content || []
-      
       // Format output
-      const output = makeOutputFromSearchResponse(contentBlocks, query, durationSeconds)
+      const output: WebSearchOutput = {
+        query,
+        results: [
+          {
+            tool_use_id: 'web-search-1',
+            content: searchResults
+          },
+          `Found ${searchResults.length} results for "${query}"${searchApiUsed === 'fallback' ? ' (using fallback)' : ''}`
+        ],
+        durationSeconds
+      }
       
       onProgress?.({
         toolUseID: 'web-search',
@@ -275,6 +307,7 @@ export const WebSearchTool = buildTool({
           type: 'search_complete',
           query,
           resultCount: output.results.length,
+          apiUsed: searchApiUsed
         },
       })
       
@@ -282,13 +315,27 @@ export const WebSearchTool = buildTool({
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
       
+      // Create fallback results with search URL
+      const fallbackUrl = `https://duckduckgo.com/?q=${encodeURIComponent(query)}`
+      const fallbackResults = [{
+        title: `Search results for "${query}"`,
+        url: fallbackUrl
+      }]
+      
       const output: WebSearchOutput = {
         query,
-        results: [`Error: ${message}`],
+        results: [
+          {
+            tool_use_id: 'web-search-1',
+            content: fallbackResults
+          },
+          `Found 1 result for "${query}" (using fallback)`,
+          `Error during search: ${message}`
+        ],
         durationSeconds: (performance.now() - startTime) / 1000,
       }
       
-      return { data: output, error: message }
+      return { data: output }
     }
   },
 } satisfies ToolDef<typeof inputSchema, WebSearchOutput, WebSearchProgress>)

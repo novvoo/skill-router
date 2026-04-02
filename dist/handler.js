@@ -1684,6 +1684,11 @@ async function runWithRouting(config, args) {
             retrieved_count: retrieval.nodes.length,
             used_in_prompt: Boolean(contextText),
         },
+        system: {
+            platform: process.platform,
+            arch: process.arch,
+            nodeVersion: process.version,
+        },
         api_context: {
             enabled: apiContextOpts.enabled,
             urls: apiContext.urls,
