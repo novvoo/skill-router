@@ -78,6 +78,7 @@ export type WebSearchProgress = {
   status?: number
   message?: string
   participantCount?: number
+  session_id?: string
 }
 
 // Web search tool schema for Anthropic API
