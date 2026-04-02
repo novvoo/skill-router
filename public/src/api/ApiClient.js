@@ -134,7 +134,10 @@ export class ApiClient {
   // Streaming request for SSE
   async streamRequest(path, body, onEvent) {
     const url = this.resolveUrl(path);
-    const headers = this.getHeaders({
+    // When body is FormData, don't set Content-Type header - let browser set it automatically
+    const headers = body instanceof FormData ? {
+      'Accept': 'text/event-stream'
+    } : this.getHeaders({
       'Accept': 'text/event-stream'
     });
 
