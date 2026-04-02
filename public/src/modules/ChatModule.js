@@ -139,11 +139,12 @@ export class ChatModule extends BaseModule {
       }
 
       // Update final message
-      this.updateMessage(thinkingIndex, result.response || '(empty)', this.buildMetadata(result));
+      const response = result?.response || '(empty)';
+      this.updateMessage(thinkingIndex, response, this.buildMetadata(result || {}));
       
       // Update context
-      if (result.summary) this.summary = result.summary;
-      if (result.messages && Array.isArray(result.messages)) {
+      if (result?.summary) this.summary = result.summary;
+      if (result?.messages && Array.isArray(result.messages)) {
         this.contextMessages = result.messages.map(m => ({
           role: m.role === 'assistant' ? 'assistant' : 'user',
           content: String(m.content || m.text || ''),
@@ -153,7 +154,7 @@ export class ChatModule extends BaseModule {
         this.contextMessages = [
           ...this.contextMessages,
           { role: 'user', content: message, sessionId: this.config.sessionId },
-          { role: 'assistant', content: result.response || '', sessionId: this.config.sessionId }
+          { role: 'assistant', content: response, sessionId: this.config.sessionId }
         ];
       }
 
@@ -170,14 +171,19 @@ export class ChatModule extends BaseModule {
         this.updateMessage(messageIndex, '思考中…', `进行中：${message}`);
       } catch (e) {
         console.warn('Failed to parse stage event:', e);
+        console.warn('Raw stage data:', data);
       }
     } else if (eventType === 'result') {
       // Final result will be handled after stream ends
     } else if (eventType === 'error') {
       try {
-        const error = JSON.parse(data);
+        // Clean data to remove any leading/trailing whitespace
+        const cleanedData = data.trim();
+        const error = JSON.parse(cleanedData);
         throw new Error(error.error || '服务端错误');
       } catch (e) {
+        console.warn('Failed to parse error event:', e);
+        console.warn('Raw error data:', data);
         throw new Error(data || '服务端错误');
       }
     }

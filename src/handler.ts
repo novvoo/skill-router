@@ -1050,7 +1050,7 @@ function getOpenAIConfigFromRequest(req: http.IncomingMessage): OpenAIConfig {
   const embeddingModel = (
     headerEmbeddingModel ||
     String(process.env.EMBEDDING_MODEL || "") ||
-    String(process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small")
+    String(process.env.OPENAI_EMBEDDING_MODEL || "fast")
   ).trim();
   const hfEndpoint = normalizeHfEndpoint(headerHfEndpoint || process.env.HF_ENDPOINT) || undefined;
 
@@ -1638,7 +1638,7 @@ async function runWithRouting(
   const rawEmbeddingModel = String(config.embeddingModel || "").trim();
   const lowerEmbeddingModel = rawEmbeddingModel.toLowerCase();
   const presetSet = new Set(["fast", "balanced", "quality", "multilingual", "compact", "large", "accurate"]);
-  const normalizedPreset =
+  const normalizedPreset = 
     lowerEmbeddingModel === "preset" || lowerEmbeddingModel === "kreuzberg"
       ? "fast"
       : lowerEmbeddingModel.startsWith("preset:") || lowerEmbeddingModel.startsWith("preset/")
@@ -1646,7 +1646,10 @@ async function runWithRouting(
         : lowerEmbeddingModel.startsWith("kreuzberg:") || lowerEmbeddingModel.startsWith("kreuzberg/")
           ? lowerEmbeddingModel.slice(10).trim()
           : lowerEmbeddingModel;
-  const embeddingUsesKreuzberg = presetSet.has(normalizedPreset);
+  // Use fast preset if the normalized preset is not valid
+  const finalPreset = presetSet.has(normalizedPreset) ? normalizedPreset : "fast";
+  // Always use kreuzberg provider, ignore openai_compatible
+  const embeddingUsesKreuzberg = true;
   const cacheDirFromEnv = String(process.env.KREUZBERG_CACHE_DIR || "").trim();
   const embeddingCacheDir = path.resolve(process.cwd(), cacheDirFromEnv || ".cache/models");
   const hfEndpointResolved = normalizeHfEndpoint(config.hfEndpoint) || normalizeHfEndpoint(process.env.HF_ENDPOINT) || null;
@@ -1657,7 +1660,7 @@ async function runWithRouting(
   const indexItemTimeoutMs = Number(String(process.env.MEMORY_INDEX_ITEM_TIMEOUT_MS || "").trim() || "0") || null;
   const indexHeartbeatMs = Number(String(process.env.MEMORY_INDEX_HEARTBEAT_MS || "").trim() || "0") || null;
   const embeddingDims = (() => {
-    switch (normalizedPreset) {
+    switch (finalPreset) {
       case "fast":
       case "compact":
         return 384;
@@ -1669,7 +1672,7 @@ async function runWithRouting(
       case "multilingual":
         return 1024;
       default:
-        return null;
+        return 384; // Default to 384 for fast preset
     }
   })();
 
@@ -1677,10 +1680,10 @@ async function runWithRouting(
     stage: "memory_search_config",
     message: "检索配置",
     data: {
-      embedding_model: rawEmbeddingModel || null,
-      embedding_provider: embeddingUsesKreuzberg ? "kreuzberg" : "openai_compatible",
-      preset: embeddingUsesKreuzberg ? normalizedPreset : null,
-      cache_dir: embeddingUsesKreuzberg ? embeddingCacheDir : null,
+      embedding_model: finalPreset,
+      embedding_provider: "kreuzberg",
+      preset: finalPreset,
+      cache_dir: embeddingCacheDir,
       hf_endpoint: hfEndpointResolved,
       timeouts: {
         openai_embed_ms: timeoutOpenAIEmbedMs,
@@ -1744,19 +1747,14 @@ async function runWithRouting(
       memory: { retrieval_called: memoryEnabled, retrieved_count: retrieval.nodes.length, used_in_prompt: false },
       models: {
         chat: config.model,
-        embedding: embeddingUsesKreuzberg
-          ? {
-              provider: "kreuzberg",
-              model_type: "preset",
-              preset: normalizedPreset,
-              dimensions: embeddingDims,
-              cache_dir: embeddingCacheDir,
-              hf_endpoint: process.env.HF_ENDPOINT || null,
-            }
-          : {
-              provider: "openai_compatible",
-              model: rawEmbeddingModel || "text-embedding-3-small",
-            },
+        embedding: {
+          provider: "kreuzberg",
+          model_type: "preset",
+          preset: finalPreset,
+          dimensions: embeddingDims,
+          cache_dir: embeddingCacheDir,
+          hf_endpoint: hfEndpointResolved,
+        },
       },
     };
   }
@@ -1804,19 +1802,14 @@ async function runWithRouting(
     },
     models: {
       chat: config.model,
-      embedding: embeddingUsesKreuzberg
-        ? {
-            provider: "kreuzberg",
-            model_type: "preset",
-            preset: normalizedPreset,
-            dimensions: embeddingDims,
-            cache_dir: embeddingCacheDir,
-            hf_endpoint: process.env.HF_ENDPOINT || null,
-          }
-        : {
-            provider: "openai_compatible",
-            model: rawEmbeddingModel || "text-embedding-3-small",
-          },
+      embedding: {
+        provider: "kreuzberg",
+        model_type: "preset",
+        preset: finalPreset,
+        dimensions: embeddingDims,
+        cache_dir: embeddingCacheDir,
+        hf_endpoint: hfEndpointResolved,
+      },
     },
   };
 

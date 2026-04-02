@@ -9,7 +9,7 @@ async function main() {
   process.env.OPENAI_API_KEY = process.env.OPENAI_API_KEY || "smoke";
   process.env.OPENAI_BASE_URL = process.env.OPENAI_BASE_URL || "https://example.invalid/v1/";
   process.env.OPENAI_MODEL = process.env.OPENAI_MODEL || "smoke";
-  process.env.OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "text-embedding-3-small";
+  process.env.OPENAI_EMBEDDING_MODEL = process.env.OPENAI_EMBEDDING_MODEL || "fast";
 
   const host = "127.0.0.1";
   const server = http.createServer((req, res) => {
@@ -96,7 +96,7 @@ async function main() {
         "x-openai-api-key": "smoke",
         "x-openai-base-url": "https://example.invalid/v1/",
         "x-openai-model": "smoke",
-        "x-openai-embedding-model": "text-embedding-3-small",
+        "x-openai-embedding-model": "fast",
       },
       body: JSON.stringify({
         query: "hello",

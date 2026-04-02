@@ -143,15 +143,15 @@ async function main() {
         "x-openai-api-key": "smoke",
         "x-openai-base-url": "https://example.invalid/v1/",
         "x-openai-model": "smoke",
-        "x-openai-embedding-model": "text-embedding-3-small",
+        "x-openai-embedding-model": "fast",
       },
       body: JSON.stringify({ query: "hello", messages: [{ role: "user", content: "hello", sessionId: "smoke" }] }),
     });
     expectOk(run2Resp.ok, `POST /run (json) failed: ${run2Resp.status}`);
     const run2: any = await run2Resp.json();
     expectOk(run2?.models?.chat === "smoke", "run models.chat should be set");
-    expectOk(run2?.models?.embedding?.provider === "openai_compatible", "run models.embedding provider mismatch");
-    expectOk(String(run2?.models?.embedding?.model || "").includes("text-embedding-3-small"), "run models.embedding model mismatch");
+    expectOk(run2?.models?.embedding?.provider === "kreuzberg", "run models.embedding provider mismatch");
+    expectOk(String(run2?.models?.embedding?.preset || "").includes("fast"), "run models.embedding preset mismatch");
 
     const fd2 = new FormData();
     fd2.append("file", new Blob(["hello"], { type: "text/plain" }), "a.txt");

@@ -152,6 +152,7 @@ export class ApiClient {
     const reader = response.body.getReader();
     const decoder = new TextDecoder();
     let buffer = '';
+    let finalResult = null;
 
     try {
       while (true) {
@@ -181,12 +182,26 @@ export class ApiClient {
           }
 
           if (data) {
-            onEvent(eventType, data);
+            // Clean data to remove any leading/trailing whitespace and ensure it's valid JSON
+            const cleanedData = data.trim();
+            onEvent(eventType, cleanedData);
+            
+            // Capture the final result
+            if (eventType === 'result') {
+              try {
+                finalResult = JSON.parse(cleanedData);
+              } catch (e) {
+                console.warn('Failed to parse result event:', e);
+                console.warn('Raw data:', data);
+              }
+            }
           }
         }
       }
     } finally {
       reader.releaseLock();
     }
+    
+    return finalResult;
   }
 }

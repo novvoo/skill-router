@@ -8,7 +8,7 @@ const config: OpenAIConfig = {
   apiKey: process.env.OPENAI_API_KEY || 'test-key',
   baseUrl: process.env.OPENAI_BASE_URL || 'https://api.openai.com/v1',
   model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
-  embeddingModel: 'text-embedding-3-small',
+  embeddingModel: 'fast',
 }
 
 async function testTools() {

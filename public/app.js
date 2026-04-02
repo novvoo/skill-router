@@ -14,8 +14,6 @@ const EMBEDDING_OPTIONS = new Set([
   "compact",
   "large",
   "accurate",
-  "text-embedding-3-small",
-  "text-embedding-3-large",
 ]);
 const HF_ENDPOINT_OPTIONS = new Set(["", "https://huggingface.co", "https://hf-mirror.com"]);
 const OCR_BACKEND_OPTIONS = new Set(["", "tesseract", "guten-ocr"]);

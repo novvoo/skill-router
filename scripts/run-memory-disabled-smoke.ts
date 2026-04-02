@@ -45,7 +45,7 @@ async function main() {
         "x-openai-api-key": "test",
         "x-openai-base-url": "https://example.invalid/v1",
         "x-openai-model": "gpt-test",
-        "x-openai-embedding-model": "text-embedding-3-small",
+        "x-openai-embedding-model": "fast",
       },
       body: JSON.stringify({
         query: "hi",

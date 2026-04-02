@@ -32,7 +32,7 @@ async function main() {
       apiKey: "test",
       baseUrl: "https://example.invalid/v1",
       model: "gpt-test",
-      embeddingModel: "text-embedding-3-small",
+      embeddingModel: "fast",
     };
 
     const vecs = await createEmbeddings(config, ["hello", "", "world"]);
@@ -41,7 +41,7 @@ async function main() {
     expectOk(vecs[1].every((x: any) => x === 0), "expected empty input to produce zero vector");
 
     expectOk(calls.length === 1, "expected one embeddings HTTP call");
-    expectOk(calls[0].body?.model === "text-embedding-3-small", "expected embeddings model to be sent");
+    expectOk(calls[0].body?.model === "fast", "expected embeddings model to be sent");
     expectOk(Array.isArray(calls[0].body?.input) && calls[0].body.input.length === 2, "expected only non-empty inputs sent");
   } finally {
     global.fetch = originalFetch;

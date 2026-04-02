@@ -24,7 +24,7 @@ async function main() {
       apiKey: "smoke",
       baseUrl: "https://example.invalid/v1/",
       model: "smoke",
-      embeddingModel: "text-embedding-3-small",
+      embeddingModel: "fast",
     });
     await cm.addMemory("/user/memories/smoke.md", "hello world");
 
