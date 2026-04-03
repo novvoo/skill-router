@@ -187,6 +187,86 @@ async function testTools() {
   }
   console.log()
   
+  // Test terminal tool
+  console.log('📱 Testing Terminal Tool...')
+  try {
+    const result = await executor.executeToolCall({
+      id: 'test-7',
+      name: 'terminal',
+      arguments: { 
+        command: 'echo "Hello from Terminal Tool!"',
+        wait_ms: 1000,
+        clear_buffer: true
+      }
+    }, {
+      abortController: new AbortController(),
+      onProgress: (progress) => {
+        console.log(`  Progress: ${progress.message}`)
+        if (progress.data?.output) {
+          console.log(`  Output: ${progress.data.output.trim()}`)
+        }
+      }
+    })
+    
+    if (result.error) {
+      console.log(`  ❌ Error: ${result.error}`)
+    } else {
+      const output = result.result as any
+      console.log(`  ✅ Success: Command executed in terminal`)
+      console.log(`  Output: ${output?.stdout || 'No output'}`)
+    }
+  } catch (error) {
+    console.log(`  ❌ Exception: ${error}`)
+  }
+  console.log()
+  
+  // Test terminal tool with multiple commands
+  console.log('📱 Testing Terminal Tool with multiple commands...')
+  try {
+    // First command
+    await executor.executeToolCall({
+      id: 'test-8',
+      name: 'terminal',
+      arguments: { 
+        command: 'echo "First command: current directory"',
+        wait_ms: 1000
+      }
+    }, {
+      abortController: new AbortController(),
+      onProgress: (progress) => {
+        if (progress.data?.output) {
+          console.log(`  Output: ${progress.data.output.trim()}`)
+        }
+      }
+    })
+    
+    // Second command
+    const result = await executor.executeToolCall({
+      id: 'test-9',
+      name: 'terminal',
+      arguments: { 
+        command: 'pwd',
+        wait_ms: 1000
+      }
+    }, {
+      abortController: new AbortController(),
+      onProgress: (progress) => {
+        if (progress.data?.output) {
+          console.log(`  Output: ${progress.data.output.trim()}`)
+        }
+      }
+    })
+    
+    if (result.error) {
+      console.log(`  ❌ Error: ${result.error}`)
+    } else {
+      console.log(`  ✅ Success: Multiple commands executed in same terminal`)
+    }
+  } catch (error) {
+    console.log(`  ❌ Exception: ${error}`)
+  }
+  console.log()
+  
   console.log('🎉 Tool testing complete!')
 }
 

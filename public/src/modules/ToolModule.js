@@ -372,13 +372,13 @@ export class ToolModule extends BaseModule {
       `,
       'web_search': `
         <div class="test-example">
-          <h4>测试样例 1: 搜索网络信息</h4>
+          <h4>测试样例 1: 生成chatId并获取群聊数据</h4>
           <pre class="code-block">{
-  "query": "Skill-Router"
+  "query": "今天上海天气怎么样"
 }</pre>
           <div class="example-actions">
-            <button class="btn-secondary copy-example-btn" data-example='{"query": "Skill-Router"}'>复制</button>
-            <button class="btn-primary execute-example-btn" data-tool="web_search" data-params='{"query": "Skill-Router"}'>执行</button>
+            <button class="btn-secondary copy-example-btn" data-example='{"query": "今天上海天气怎么样"}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="web_search" data-params='{"query": "今天上海天气怎么样"}'>执行</button>
           </div>
         </div>
       `,
@@ -391,6 +391,44 @@ export class ToolModule extends BaseModule {
           <div class="example-actions">
             <button class="btn-secondary copy-example-btn" data-example='{"url": "https://example.com"}'>复制</button>
             <button class="btn-primary execute-example-btn" data-tool="web_fetch" data-params='{"url": "https://example.com"}'>执行</button>
+          </div>
+        </div>
+      `,
+      'terminal': `
+        <div class="test-example">
+          <h4>测试样例 1: 执行简单命令</h4>
+          <pre class="code-block">{
+  "command": "echo \"Hello from Terminal Tool!\"",
+  "wait_ms": 1000,
+  "clear_buffer": true
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"command": "echo \"Hello from Terminal Tool!\"", "wait_ms": 1000, "clear_buffer": true}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="terminal" data-params='{"command": "echo \"Hello from Terminal Tool!\"", "wait_ms": 1000, "clear_buffer": true}'>执行</button>
+          </div>
+        </div>
+        
+        <div class="test-example">
+          <h4>测试样例 2: 查看当前目录</h4>
+          <pre class="code-block">{
+  "command": "pwd",
+  "wait_ms": 1000
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"command": "pwd", "wait_ms": 1000}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="terminal" data-params='{"command": "pwd", "wait_ms": 1000}'>执行</button>
+          </div>
+        </div>
+        
+        <div class="test-example">
+          <h4>测试样例 3: 列出文件</h4>
+          <pre class="code-block">{
+  "command": "ls -la",
+  "wait_ms": 1000
+}</pre>
+          <div class="example-actions">
+            <button class="btn-secondary copy-example-btn" data-example='{"command": "ls -la", "wait_ms": 1000}'>复制</button>
+            <button class="btn-primary execute-example-btn" data-tool="terminal" data-params='{"command": "ls -la", "wait_ms": 1000}'>执行</button>
           </div>
         </div>
       `

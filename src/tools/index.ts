@@ -7,6 +7,7 @@ import { BashTool } from './BashTool.js'
 import { GlobTool } from './GlobTool.js'
 import { GrepTool } from './GrepTool.js'
 import { AskUserQuestionTool } from './AskUserQuestionTool.js'
+import { TerminalTool } from './TerminalTool.js'
 import { AgentTool } from '../agents/AgentTool.js'
 import type { Tools } from './Tool.js'
 
@@ -29,6 +30,7 @@ export function getAllTools(): Tools {
     
     // System interaction
     BashTool,
+    TerminalTool,
     
     // Network tools
     WebFetchTool,
@@ -54,6 +56,7 @@ export * from './FileReadTool.js'
 export * from './FileWriteTool.js'
 export * from './FileEditTool.js'
 export * from './BashTool.js'
+export * from './TerminalTool.js'
 export * from './GlobTool.js'
 export * from './GrepTool.js'
 export * from './AskUserQuestionTool.js'

@@ -84,6 +84,16 @@ export class AgentTaskExecutor extends EventEmitter {
             apiKey,
             baseUrl,
             model: options.model || model
+          },
+          // 传递进度回调
+          onProgress: (progress) => {
+            this.updateAgentProgress(taskId, {
+              toolUseCount: progress.data?.toolUseCount || 0,
+              tokenCount: progress.data?.tokenCount || 0,
+              lastActivity: progress.message,
+              recentActivities: [...(taskState.progress?.recentActivities || []), progress.message].slice(-10)
+            })
+            this.emit('progressUpdate', { taskId, progress })
           }
         }
       )

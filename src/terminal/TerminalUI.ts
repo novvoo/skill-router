@@ -43,6 +43,14 @@ export class TerminalUI {
       this.progressTracker = new ProgressTracker()
     }
     
+    // 导入taskAPI并监听进度事件
+    const { taskAPI } = await import('../tasks/TaskAPI.js')
+    taskAPI.on('agentProgress', (data) => {
+      if (data.progress) {
+        this.displayProgress(data.progress)
+      }
+    })
+    
     this.isInteractive = true
     
     console.log('🤖 Skill-Router Agent Terminal')

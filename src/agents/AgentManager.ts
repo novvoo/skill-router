@@ -241,9 +241,8 @@ export class AgentManager {
 
     this.runningAgents.set(agentId, instance)
 
-    if (options.background || definition.background) {
-      void this.runAgentAsync(instance)
-    }
+    // 总是异步运行agent，这样进度回调才会被触发
+    void this.runAgentAsync(instance)
 
     return instance
   }
