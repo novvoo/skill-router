@@ -1,5 +1,5 @@
 
-import { readdir, readFile, stat } from "fs/promises";
+import { readdir, readFile, stat, writeFile, mkdir } from "fs/promises";
 import { join, resolve } from "path";
 import { ContextNode, ContextType, ContextLevel } from "./types.js";
 import { VirtualFileSystem } from "./vfs.js";
@@ -86,5 +86,52 @@ export class MemoryManager {
     // Since we pre-loaded content in loadDirectory, we are good for now.
     
     return node;
+  }
+
+  public async saveFile(node: ContextNode): Promise<boolean> {
+    try {
+      // Determine the filesystem path based on the virtual path
+      let fsPath: string;
+      
+      if (node.path.startsWith('/user/memories')) {
+        const relativePath = node.path.replace('/user/memories', '');
+        fsPath = resolve(process.cwd(), 'user/memories' + relativePath);
+      } else if (node.path.startsWith('/user/sessions')) {
+        const relativePath = node.path.replace('/user/sessions', '');
+        fsPath = resolve(process.cwd(), 'user/sessions' + relativePath);
+      } else if (node.path.startsWith('/agent/memories')) {
+        const relativePath = node.path.replace('/agent/memories', '');
+        fsPath = resolve(process.cwd(), 'agent/memories' + relativePath);
+      } else {
+        // Default to user memories for new files
+        fsPath = resolve(process.cwd(), 'user/memories' + node.path);
+      }
+
+      // Ensure the directory exists
+      const dirPath = fsPath.substring(0, fsPath.lastIndexOf('/'));
+      await this.ensureDirectory(dirPath);
+
+      // Write the file content
+      await writeFile(fsPath, node.content || '', 'utf-8');
+
+      // Update the node's filesystem path metadata
+      node.metadata.fsPath = fsPath;
+      node.metadata.mtime = new Date().toISOString();
+
+      return true;
+    } catch (error) {
+      console.error(`Failed to save file ${node.path}:`, error);
+      return false;
+    }
+  }
+
+  private async ensureDirectory(dirPath: string): Promise<void> {
+    try {
+      await mkdir(dirPath, { recursive: true });
+    } catch (error: any) {
+      if (error?.code !== 'EEXIST') {
+        throw error;
+      }
+    }
   }
 }

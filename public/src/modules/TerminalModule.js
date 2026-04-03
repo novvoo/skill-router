@@ -8,6 +8,10 @@ export class TerminalModule extends BaseModule {
     this.commandHistory = [];
     this.historyIndex = -1;
     this.sessionId = this.generateSessionId();
+    this.settings = {
+      wait_ms: 3000,
+      clear_buffer: false
+    };
   }
 
   async onActivate() {
@@ -37,7 +41,10 @@ export class TerminalModule extends BaseModule {
     });
 
     this.addEventListener('#clear-terminal', 'click', () => this.clearTerminal());
-    this.addEventListener('#connect-terminal', 'click', () => this.toggleConnection());
+    this.addEventListener('#terminal-settings-btn', 'click', () => this.openSettingsModal());
+    this.addEventListener('#save-terminal-settings', 'click', () => this.saveSettings());
+    this.addEventListener('#cancel-terminal-settings', 'click', () => this.closeSettingsModal());
+    this.addEventListener('.modal-close', 'click', () => this.closeSettingsModal());
   }
 
   generateSessionId() {
@@ -156,16 +163,32 @@ export class TerminalModule extends BaseModule {
         return;
       }
       
-      const result = await this.api.post('/run', {
-        query: command,
-        tools: { enabled: true },
-        memory: { enabled: true }
-      });
+      // Use TerminalTool to execute command directly
+      const result = await this.api.executeTools([{
+        id: `terminal_${Date.now()}`,
+        name: 'terminal',
+        arguments: {
+          command: command,
+          wait_ms: this.settings.wait_ms,
+          clear_buffer: this.settings.clear_buffer
+        }
+      }]);
 
-      this.addToHistory('assistant', result.response || 'Task completed');
-      
-      if (result.used_skills && result.used_skills.length > 0) {
-        this.addToHistory('system', `Used skills: ${result.used_skills.join(', ')}`);
+      if (result.results && result.results.length > 0) {
+        const toolResult = result.results[0];
+        if (toolResult.error) {
+          this.addToHistory('error', `Error: ${toolResult.error}`);
+        } else {
+          const output = toolResult.result;
+          if (output.stdout) {
+            this.addToHistory('system', output.stdout);
+          }
+          if (output.stderr) {
+            this.addToHistory('error', output.stderr);
+          }
+        }
+      } else {
+        this.addToHistory('error', 'No result from terminal');
       }
     } catch (error) {
       this.addToHistory('error', `Failed: ${error.message}`);
@@ -364,15 +387,33 @@ chat <message>           - Send message to chat
     this.addToHistory('system', 'Terminal cleared');
   }
 
-  toggleConnection() {
-    const button = this.element.querySelector('#connect-terminal');
-    
-    if (button) {
-      button.textContent = 'Connected';
-      button.className = 'btn-success';
-      button.disabled = true;
+  openSettingsModal() {
+    const modal = document.getElementById('terminal-settings-modal');
+    if (modal) {
+      // Populate form with current settings
+      document.getElementById('terminal-wait-ms').value = this.settings.wait_ms;
+      document.getElementById('terminal-clear-buffer').checked = this.settings.clear_buffer;
+      modal.style.display = 'block';
     }
+  }
 
-    this.addToHistory('system', 'Terminal connected');
+  saveSettings() {
+    const waitMs = document.getElementById('terminal-wait-ms').value;
+    const clearBuffer = document.getElementById('terminal-clear-buffer').checked;
+
+    this.settings = {
+      wait_ms: parseInt(waitMs),
+      clear_buffer: clearBuffer
+    };
+
+    this.closeSettingsModal();
+    this.addToHistory('system', 'Terminal settings saved');
+  }
+
+  closeSettingsModal() {
+    const modal = document.getElementById('terminal-settings-modal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
   }
 }

@@ -15,31 +15,93 @@ const FETCH_TIMEOUT_MS = 30_000
 const decodeHtmlEntities = he.decode
 
 /**
+ * Generate random hex string
+ */
+function generateHex(length: number): string {
+  let result = ''
+  const characters = '0123456789ABCDEF'
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length))
+  }
+  return result
+}
+
+/**
+ * Generate random Chrome version
+ */
+function generateChromeVersion(): string {
+  const major = Math.floor(Math.random() * 10) + 140 // 140-149
+  const minor = Math.floor(Math.random() * 10000)
+  return `${major}.0.${minor}.${Math.floor(Math.random() * 255)}`
+}
+
+/**
+ * Generate random screen resolution
+ */
+function generateScreenResolution(): { width: number; height: number } {
+  const widths = [1920, 1366, 1536, 1440, 1280]
+  const width = widths[Math.floor(Math.random() * widths.length)]
+  const height = Math.floor(width * 9 / 16) // 16:9 aspect ratio
+  return { width, height }
+}
+
+/**
+ * Generate dynamic browser headers (fingerprint)
+ */
+function generateBrowserHeaders(): typeof BROWSER_HEADERS {
+  const chromeVersion = generateChromeVersion()
+  const screen = generateScreenResolution()
+  
+  return {
+    'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Ch-Ua': `"Chromium";v="${chromeVersion.split('.')[0]}", "Not-A.Brand";v="24", "Google Chrome";v="${chromeVersion.split('.')[0]}"`,
+    'Sec-Ch-Ua-Arch': '"x86"',
+    'Sec-Ch-Ua-Bitness': '"64"',
+    'Sec-Ch-Ua-Full-Version': `"${chromeVersion}"`,
+    'Sec-Ch-Ua-Full-Version-List': `"Chromium";v="${chromeVersion}", "Not-A.Brand";v="24.0.0.0", "Google Chrome";v="${chromeVersion}"`,
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Model': '""',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Ch-Ua-Platform-Version': '"10.0.0"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Referer': 'https://www.bing.com/',
+  }
+}
+
+/**
+ * Generate dynamic cookies for Bing search
+ */
+function generateCookies(): Record<string, string> {
+  const screen = generateScreenResolution()
+  return {
+    'MUID': generateHex(32),
+    'SRCHD': 'AF=NOFORM',
+    'SRCHUID': `V=2&GUID=${generateHex(32)}&dmnchg=1`,
+    'SRCHHPGUSR': `SRCHLANG=zh-Hans&PV=10.0.0&BZA=0&PREFCOL=1&BRW=XW&BRH=M&CW=${screen.width}&CH=${screen.height}&SCW=${screen.width}&SCH=${screen.height}&DPR=1.0&UTC=480&B=0&EXLTT=6&AV=14&ADV=14`,
+    '_EDGE_S': `SID=${generateHex(32)}&mkt=zh-CN&ui=zh-cn`,
+    'USRLOC': 'HS=1&ELOC=LAT=31.201019287109375|LON=121.40116882324219|N=%E9%95%BF%E5%AE%81%E5%8C%BA%EF%BC%8C%E4%B8%8A%E6%B5%B7%E5%B8%82|ELT=4|',
+  }
+}
+
+/**
  * Browser-like headers to avoid Bing's anti-bot JS-rendered response.
  * These mimic Google Chrome on Windows to get full HTML search results.
  */
-const BROWSER_HEADERS = {
-  'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/146.0.0.0 Safari/537.36',
-  'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
-  'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8',
-  'Accept-Encoding': 'gzip, deflate, br',
-  'Cache-Control': 'no-cache',
-  'Pragma': 'no-cache',
-  'Sec-Ch-Ua': '"Chromium";v="146", "Not-A.Brand";v="24", "Google Chrome";v="146"',
-  'Sec-Ch-Ua-Arch': '"x86"',
-  'Sec-Ch-Ua-Bitness': '"64"',
-  'Sec-Ch-Ua-Full-Version': '"146.0.7680.165"',
-  'Sec-Ch-Ua-Full-Version-List': '"Chromium";v="146.0.7680.165", "Not-A.Brand";v="24.0.0.0", "Google Chrome";v="146.0.7680.165"',
-  'Sec-Ch-Ua-Mobile': '?0',
-  'Sec-Ch-Ua-Model': '""',
-  'Sec-Ch-Ua-Platform': '"Windows"',
-  'Sec-Ch-Ua-Platform-Version': '"10.0.0"',
-  'Sec-Fetch-Dest': 'document',
-  'Sec-Fetch-Mode': 'navigate',
-  'Sec-Fetch-Site': 'none',
-  'Sec-Fetch-User': '?1',
-  'Upgrade-Insecure-Requests': '1',
-} as const
+const BROWSER_HEADERS = generateBrowserHeaders()
+
+/**
+ * Default cookies for Bing search to get personalized results
+ */
+const DEFAULT_COOKIES = generateCookies()
 
 export class BingSearchAdapter implements WebSearchAdapter {
   async search(
@@ -63,11 +125,23 @@ export class BingSearchAdapter implements WebSearchAdapter {
 
     let html: string
     try {
+      // 动态生成浏览器指纹和cookies
+      const dynamicHeaders = generateBrowserHeaders()
+      const dynamicCookies = generateCookies()
+      
+      // 构建cookie字符串
+      const cookieString = Object.entries(dynamicCookies)
+        .map(([key, value]) => `${key}=${value}`)
+        .join('; ')
+      
       const response = await axios.get(url, {
         signal: abortController.signal,
         timeout: FETCH_TIMEOUT_MS,
         responseType: 'text',
-        headers: BROWSER_HEADERS,
+        headers: {
+          ...dynamicHeaders,
+          'Cookie': cookieString,
+        },
         maxRedirects: 5, // 支持最多5次跳转
       })
       html = response.data

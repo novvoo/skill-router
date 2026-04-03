@@ -25,11 +25,18 @@ function cosineSimilarity(a: number[], b: number[]): number {
 }
 
 // Simple keyword overlap score (0.0 - 1.0)
-function keywordScore(query: string, text: string): number {
-    const qTerms = query.toLowerCase().split(/\s+/).filter(t => t.length > 1);
+function keywordScore(query: string, text: string, caseSensitive: boolean = false, phraseSearch: boolean = false): number {
+    if (phraseSearch) {
+        // Exact phrase matching
+        const targetText = caseSensitive ? text : text.toLowerCase();
+        const searchQuery = caseSensitive ? query : query.toLowerCase();
+        return targetText.includes(searchQuery) ? 1.0 : 0.0;
+    }
+    
+    const qTerms = (caseSensitive ? query : query.toLowerCase()).split(/\s+/).filter(t => t.length > 1);
     if (!qTerms.length) return 0;
     
-    const target = text.toLowerCase();
+    const target = caseSensitive ? text : text.toLowerCase();
     let matches = 0;
     for (const term of qTerms) {
         if (target.includes(term)) matches++;
@@ -81,6 +88,22 @@ export class ContextRetriever {
                  return;
             }
 
+            // Check if node should be excluded
+            if (options.excludePaths && options.excludePaths.some(exclude => node.path.startsWith(exclude))) {
+                trajectory.push(`Excluded node: ${node.path}`);
+                return;
+            }
+
+            // Check file type filter
+            if (options.fileTypes && options.fileTypes.length > 0) {
+                const fileName = node.path.split('/').pop() || '';
+                const fileExtension = fileName.split('.').pop()?.toLowerCase() || '';
+                if (!options.fileTypes.some(type => type.toLowerCase() === fileExtension)) {
+                    trajectory.push(`Filtered out node ${node.path} by file type`);
+                    return;
+                }
+            }
+
             const vec = this.nodeEmbeddings.get(node.path);
             let score = 0;
             let semanticScore = 0;
@@ -94,7 +117,7 @@ export class ContextRetriever {
             // Keyword matching (Hybrid Search)
             // Especially important when using Mock Embeddings
             const content = node.content || node.summary || "";
-            keywordBonus = keywordScore(options.query, content);
+            keywordBonus = keywordScore(options.query, content, options.caseSensitive, options.phraseSearch);
 
             // Recency Bonus for Sessions
             // If the query asks for "last", "previous", "recent", etc., boost recent sessions significantly
@@ -123,14 +146,29 @@ export class ContextRetriever {
             
             // Lower threshold because Mock embeddings might give near-zero semantic scores
             // But we want to capture nodes with high Keyword or Recency scores
-            if (score >= 0.1) {
+            if (score >= (options.minScore || 0.1)) {
                 candidates.push({ ...node, score });
             }
         }, target);
     }
 
-    // Sort by score
-    candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+    // Sort results based on sortBy option
+    if (options.sortBy === 'date') {
+        candidates.sort((a, b) => {
+            const dateA = a.metadata?.mtime ? new Date(a.metadata.mtime).getTime() : 0;
+            const dateB = b.metadata?.mtime ? new Date(b.metadata.mtime).getTime() : 0;
+            return dateB - dateA;
+        });
+    } else if (options.sortBy === 'name') {
+        candidates.sort((a, b) => {
+            const nameA = a.path.split('/').pop() || '';
+            const nameB = b.path.split('/').pop() || '';
+            return nameA.localeCompare(nameB);
+        });
+    } else {
+        // Default: sort by relevance
+        candidates.sort((a, b) => (b.score || 0) - (a.score || 0));
+    }
 
     const final = candidates.slice(0, options.maxResults || 5);
     trajectory.push(`Selected top ${final.length} candidates.`);

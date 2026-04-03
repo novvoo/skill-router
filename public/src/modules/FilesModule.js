@@ -70,6 +70,71 @@ export class FilesModule extends BaseModule {
     }
   }
 
+  async editFile(path, content) {
+    this.showLoading(true);
+    try {
+      await this.api.post('/api/files/edit', { path, content });
+      this.showStatus('文件编辑成功');
+      await this.loadDirectoryContent();
+    } catch (error) {
+      this.showStatus(`编辑文件失败：${error.message}`, true);
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  async renameFile(oldPath, newPath) {
+    this.showLoading(true);
+    try {
+      await this.api.post('/api/files/rename', { oldPath, newPath });
+      this.showStatus('文件重命名成功');
+      await this.loadDirectoryContent();
+    } catch (error) {
+      this.showStatus(`重命名文件失败：${error.message}`, true);
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  async copyFile(sourcePath, destinationPath) {
+    this.showLoading(true);
+    try {
+      await this.api.post('/api/files/copy', { sourcePath, destinationPath });
+      this.showStatus('文件复制成功');
+      await this.loadDirectoryContent();
+    } catch (error) {
+      this.showStatus(`复制文件失败：${error.message}`, true);
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  async moveFile(sourcePath, destinationPath) {
+    this.showLoading(true);
+    try {
+      await this.api.post('/api/files/move', { oldPath: sourcePath, newPath: destinationPath });
+      this.showStatus('文件移动成功');
+      await this.loadDirectoryContent();
+    } catch (error) {
+      this.showStatus(`移动文件失败：${error.message}`, true);
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
+  async searchFiles(query, options = {}) {
+    this.showLoading(true);
+    try {
+      const response = await this.api.post('/api/files/search', { query, options });
+      return response;
+    } catch (error) {
+      this.showStatus(`搜索文件失败：${error.message}`, true);
+      return [];
+    } finally {
+      this.showLoading(false);
+    }
+  }
+
   updateCurrentDirectoryDisplay() {
     const cwdElement = this.element.querySelector('#current-cwd');
     if (cwdElement) {
@@ -97,6 +162,49 @@ export class FilesModule extends BaseModule {
         }
       });
     });
+
+    // Bind click events for file operations
+    container.querySelectorAll('.file-item:not(.directory)').forEach(item => {
+      // Edit file
+      const editBtn = item.querySelector('.file-action.edit');
+      if (editBtn) {
+        editBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = item.dataset.path;
+          this.showEditFileModal(path);
+        });
+      }
+
+      // Rename file
+      const renameBtn = item.querySelector('.file-action.rename');
+      if (renameBtn) {
+        renameBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = item.dataset.path;
+          this.showRenameFileModal(path);
+        });
+      }
+
+      // Copy file
+      const copyBtn = item.querySelector('.file-action.copy');
+      if (copyBtn) {
+        copyBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = item.dataset.path;
+          this.showCopyFileModal(path);
+        });
+      }
+
+      // Move file
+      const moveBtn = item.querySelector('.file-action.move');
+      if (moveBtn) {
+        moveBtn.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const path = item.dataset.path;
+          this.showMoveFileModal(path);
+        });
+      }
+    });
   }
 
   renderFileItem(item) {
@@ -104,12 +212,22 @@ export class FilesModule extends BaseModule {
     const icon = isDirectory ? '📁' : '📄';
     const itemClass = isDirectory ? 'file-item directory' : 'file-item';
 
+    const fileActions = !isDirectory ? `
+      <div class="file-actions">
+        <button class="file-action edit" title="编辑文件">✏️</button>
+        <button class="file-action rename" title="重命名文件">📝</button>
+        <button class="file-action copy" title="复制文件">📋</button>
+        <button class="file-action move" title="移动文件">📦</button>
+      </div>
+    ` : '';
+
     return `
       <div class="${itemClass}" data-path="${item.path}">
         <span class="file-icon">${icon}</span>
         <span class="file-name">${item.name}</span>
         ${!isDirectory ? `<span class="file-size">${this.formatFileSize(item.size)}</span>` : ''}
         <span class="file-mtime">${this.formatDate(item.mtime)}</span>
+        ${fileActions}
       </div>
     `;
   }
@@ -262,5 +380,252 @@ export class FilesModule extends BaseModule {
     await this.loadCurrentDirectory();
     await this.loadDirectoryContent();
     this.showStatus('文件列表已刷新');
+  }
+
+  // Edit file modal
+  showEditFileModal(filePath) {
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'block';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>编辑文件</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="edit-file-form">
+            <div class="form-group">
+              <label>文件路径</label>
+              <input type="text" value="${filePath}" disabled>
+            </div>
+            <div class="form-group">
+              <label>文件内容</label>
+              <textarea id="edit-file-content" rows="10"></textarea>
+            </div>
+            <div class="form-actions">
+              <button id="submit-edit-file-btn" type="button" class="btn-primary">保存</button>
+              <button id="cancel-edit-file-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Load file content
+    this.loadFileContent(filePath).then(content => {
+      const contentInput = modal.querySelector('#edit-file-content');
+      if (contentInput) {
+        contentInput.value = content;
+      }
+    });
+
+    // Bind events
+    modal.querySelector('#submit-edit-file-btn').addEventListener('click', async () => {
+      const content = modal.querySelector('#edit-file-content').value;
+      await this.editFile(filePath, content);
+      modal.remove();
+    });
+
+    modal.querySelector('#cancel-edit-file-btn').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    modal.querySelector('.modal-close').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+  }
+
+  // Rename file modal
+  showRenameFileModal(oldPath) {
+    const fileName = oldPath.split('/').pop();
+    const directory = oldPath.substring(0, oldPath.lastIndexOf('/'));
+
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'block';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>重命名文件</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="rename-file-form">
+            <div class="form-group">
+              <label>当前路径</label>
+              <input type="text" value="${oldPath}" disabled>
+            </div>
+            <div class="form-group">
+              <label>新文件名</label>
+              <input type="text" id="new-file-name" value="${fileName}">
+            </div>
+            <div class="form-actions">
+              <button id="submit-rename-file-btn" type="button" class="btn-primary">重命名</button>
+              <button id="cancel-rename-file-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Bind events
+    modal.querySelector('#submit-rename-file-btn').addEventListener('click', async () => {
+      const newFileName = modal.querySelector('#new-file-name').value;
+      const newPath = directory + '/' + newFileName;
+      await this.renameFile(oldPath, newPath);
+      modal.remove();
+    });
+
+    modal.querySelector('#cancel-rename-file-btn').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    modal.querySelector('.modal-close').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+  }
+
+  // Copy file modal
+  showCopyFileModal(sourcePath) {
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'block';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>复制文件</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="copy-file-form">
+            <div class="form-group">
+              <label>源文件</label>
+              <input type="text" value="${sourcePath}" disabled>
+            </div>
+            <div class="form-group">
+              <label>目标路径</label>
+              <input type="text" id="copy-destination-path" value="${sourcePath}">
+            </div>
+            <div class="form-actions">
+              <button id="submit-copy-file-btn" type="button" class="btn-primary">复制</button>
+              <button id="cancel-copy-file-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Bind events
+    modal.querySelector('#submit-copy-file-btn').addEventListener('click', async () => {
+      const destinationPath = modal.querySelector('#copy-destination-path').value;
+      await this.copyFile(sourcePath, destinationPath);
+      modal.remove();
+    });
+
+    modal.querySelector('#cancel-copy-file-btn').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    modal.querySelector('.modal-close').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+  }
+
+  // Move file modal
+  showMoveFileModal(sourcePath) {
+    // Create modal
+    const modal = document.createElement('div');
+    modal.className = 'modal';
+    modal.style.display = 'block';
+    modal.innerHTML = `
+      <div class="modal-content">
+        <div class="modal-header">
+          <h3>移动文件</h3>
+          <button class="modal-close">&times;</button>
+        </div>
+        <div class="modal-body">
+          <form id="move-file-form">
+            <div class="form-group">
+              <label>源文件</label>
+              <input type="text" value="${sourcePath}" disabled>
+            </div>
+            <div class="form-group">
+              <label>目标路径</label>
+              <input type="text" id="move-destination-path" value="${sourcePath}">
+            </div>
+            <div class="form-actions">
+              <button id="submit-move-file-btn" type="button" class="btn-primary">移动</button>
+              <button id="cancel-move-file-btn" type="button" class="btn-secondary">取消</button>
+            </div>
+          </form>
+        </div>
+      </div>
+    `;
+    document.body.appendChild(modal);
+
+    // Bind events
+    modal.querySelector('#submit-move-file-btn').addEventListener('click', async () => {
+      const destinationPath = modal.querySelector('#move-destination-path').value;
+      await this.moveFile(sourcePath, destinationPath);
+      modal.remove();
+    });
+
+    modal.querySelector('#cancel-move-file-btn').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    modal.querySelector('.modal-close').addEventListener('click', () => {
+      modal.remove();
+    });
+
+    // Close modal when clicking outside
+    modal.addEventListener('click', (e) => {
+      if (e.target === modal) {
+        modal.remove();
+      }
+    });
+  }
+
+  // Load file content
+  async loadFileContent(filePath) {
+    try {
+      const response = await fetch(`/api/files/read?path=${encodeURIComponent(filePath)}`);
+      if (!response.ok) {
+        throw new Error('Failed to load file');
+      }
+      const data = await response.json();
+      return data.content;
+    } catch (error) {
+      console.error('Error loading file:', error);
+      return '';
+    }
   }
 }

@@ -213,6 +213,244 @@ export class ContextManager {
       }
       return deleted;
   }
+
+  public async editFile(path: string, content: string, summary?: string): Promise<boolean> {
+      await this.ensureLoaded();
+      const node = this.vfs.resolve(path);
+      if (!node || node.type === ContextType.Directory) {
+          return false;
+      }
+
+      // Update node content and metadata
+      node.content = content;
+      node.summary = summary || content.slice(0, 100);
+      node.metadata.mtime = new Date().toISOString();
+
+      // Save to disk
+      await this.memoryManager.saveFile(node);
+
+      // Reindex the node if already indexed
+      if (this.indexed) {
+          await this.retriever.indexNode(node);
+      }
+
+      return true;
+  }
+
+  public async searchContent(query: string, options: {
+      caseSensitive?: boolean;
+      wholeWord?: boolean;
+      targetDirectories?: string[];
+      fileTypes?: string[];
+      maxResults?: number;
+  } = {}): Promise<Array<{
+      path: string;
+      matches: Array<{
+          line: number;
+          content: string;
+          position: number;
+      }>;
+  }>> {
+      await this.ensureLoaded();
+      
+      const results: Array<{
+          path: string;
+          matches: Array<{
+              line: number;
+              content: string;
+              position: number;
+          }>;
+      }> = [];
+
+      const { caseSensitive = false, wholeWord = false, targetDirectories = ["/"], fileTypes = [], maxResults = 20 } = options;
+
+      for (const target of targetDirectories) {
+          this.vfs.traverse((node) => {
+              if (node.type === ContextType.Directory) return;
+              
+              // Check file type filter
+              if (fileTypes.length > 0) {
+                  const fileName = node.path.split('/').pop() || '';
+                  const fileExtension = fileName.split('.').pop()?.toLowerCase() || '';
+                  if (!fileTypes.some(type => type.toLowerCase() === fileExtension)) {
+                      return;
+                  }
+              }
+
+              // Search in file content
+              if (node.content) {
+                  const content = caseSensitive ? node.content : node.content.toLowerCase();
+                  const searchQuery = caseSensitive ? query : query.toLowerCase();
+                  
+                  if (content.includes(searchQuery)) {
+                      const lines = node.content.split('\n');
+                      const matches: Array<{
+                          line: number;
+                          content: string;
+                          position: number;
+                      }> = [];
+
+                      lines.forEach((line, lineIndex) => {
+                          const lineContent = caseSensitive ? line : line.toLowerCase();
+                          let position = lineContent.indexOf(searchQuery);
+                          
+                          while (position !== -1) {
+                              // Check for whole word match if requested
+                              if (wholeWord) {
+                                  const start = position === 0 || !/\w/.test(lineContent[position - 1]);
+                                  const end = position + searchQuery.length >= lineContent.length || !/\w/.test(lineContent[position + searchQuery.length]);
+                                  
+                                  if (start && end) {
+                                      matches.push({
+                                          line: lineIndex + 1,
+                                          content: line,
+                                          position: position + 1,
+                                      });
+                                  }
+                              } else {
+                                  matches.push({
+                                      line: lineIndex + 1,
+                                      content: line,
+                                      position: position + 1,
+                                  });
+                              }
+                              
+                              position = lineContent.indexOf(searchQuery, position + 1);
+                          }
+                      });
+
+                      if (matches.length > 0) {
+                          results.push({
+                              path: node.path,
+                              matches,
+                          });
+                      }
+                  }
+              }
+          }, target);
+      }
+
+      // Limit results
+      return results.slice(0, maxResults);
+  }
+
+  public async createFile(path: string, content: string, summary?: string): Promise<boolean> {
+      await this.ensureLoaded();
+      
+      // Check if file already exists
+      const existingNode = this.vfs.resolve(path);
+      if (existingNode && existingNode.type !== ContextType.Directory) {
+          return false; // File already exists
+      }
+
+      // Create new file node
+      const node: ContextNode = {
+          path,
+          type: ContextType.Memory,
+          metadata: {
+              created: new Date().toISOString(),
+              mtime: new Date().toISOString(),
+          },
+          content,
+          summary: summary || content.slice(0, 100),
+          level: ContextLevel.L2,
+      };
+
+      // Mount the node to VFS
+      this.vfs.mount(path, node);
+
+      // Save to disk
+      await this.memoryManager.saveFile(node);
+
+      // Index the node if already indexed
+      if (this.indexed) {
+          await this.retriever.indexNode(node);
+      }
+
+      return true;
+  }
+
+  public async renameFile(oldPath: string, newPath: string): Promise<boolean> {
+      await this.ensureLoaded();
+      
+      // Check if source file exists
+      const sourceNode = this.vfs.resolve(oldPath);
+      if (!sourceNode || sourceNode.type === ContextType.Directory) {
+          return false; // Source file not found
+      }
+
+      // Check if destination already exists
+      const destNode = this.vfs.resolve(newPath);
+      if (destNode && destNode.type !== ContextType.Directory) {
+          return false; // Destination already exists
+      }
+
+      // Create new node with updated path
+      const newNode: ContextNode = {
+          ...sourceNode,
+          path: newPath,
+          metadata: {
+              ...sourceNode.metadata,
+              mtime: new Date().toISOString(),
+          },
+      };
+
+      // Delete old node
+      this.vfs.delete(oldPath);
+      this.retriever.removeNode(oldPath);
+
+      // Mount new node
+      this.vfs.mount(newPath, newNode);
+
+      // Index new node if already indexed
+      if (this.indexed) {
+          await this.retriever.indexNode(newNode);
+      }
+
+      return true;
+  }
+
+  public async copyFile(sourcePath: string, destinationPath: string): Promise<boolean> {
+      await this.ensureLoaded();
+      
+      // Check if source file exists
+      const sourceNode = this.vfs.resolve(sourcePath);
+      if (!sourceNode || sourceNode.type === ContextType.Directory) {
+          return false; // Source file not found
+      }
+
+      // Check if destination already exists
+      const destNode = this.vfs.resolve(destinationPath);
+      if (destNode && destNode.type !== ContextType.Directory) {
+          return false; // Destination already exists
+      }
+
+      // Create new node with copied content
+      const newNode: ContextNode = {
+          ...sourceNode,
+          path: destinationPath,
+          metadata: {
+              ...sourceNode.metadata,
+              created: new Date().toISOString(),
+              mtime: new Date().toISOString(),
+          },
+      };
+
+      // Mount new node
+      this.vfs.mount(destinationPath, newNode);
+
+      // Index new node if already indexed
+      if (this.indexed) {
+          await this.retriever.indexNode(newNode);
+      }
+
+      return true;
+  }
+
+  public async moveFile(sourcePath: string, destinationPath: string): Promise<boolean> {
+      // Move is just a rename
+      return this.renameFile(sourcePath, destinationPath);
+  }
   
   public list(path: string = "/"): ContextNode[] {
       const node = this.vfs.resolve(path);

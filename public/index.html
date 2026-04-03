@@ -30,7 +30,7 @@
           <span class="nav-text">Agent</span>
           <span class="nav-shortcut">Ctrl+2</span>
         </a>
-        <a href="#" class="nav-item" data-route="tools">
+        <a href="#" class="nav-item active" data-route="tools">
           <span class="nav-icon">🔧</span>
           <span class="nav-text">工具</span>
           <span class="nav-shortcut">Ctrl+3</span>
@@ -176,18 +176,35 @@
       <!-- Tools Page -->
       <div id="tools-page" class="page" style="display: none;">
         <div class="page-header">
-          <h2>工具管理</h2>
-          <button id="refresh-tools" class="btn-secondary">刷新</button>
+          <h2>工具</h2>
+          <div class="page-actions">
+            <button id="refresh-tools" class="btn-secondary">刷新</button>
+            <button id="clear-tools-terminal" class="btn-secondary">清空</button>
+          </div>
         </div>
 
-        <div class="section">
-          <h3>可用工具</h3>
-          <div id="tools-list" class="cards-grid"></div>
+        <div class="tools-layout">
+          <!-- Tool Menu Sidebar -->
+          <div class="tools-sidebar">
+            <div class="sidebar-header">
+              <h3>可用工具</h3>
+            </div>
+            <div id="tools-list-terminal" class="tools-menu-list"></div>
+          </div>
+
+          <!-- Terminal Container -->
+          <div class="terminal-container">
+            <div id="tools-terminal-output" class="terminal-output"></div>
+            
+            <div class="terminal-input-container">
+              <div class="terminal-prompt">$</div>
+              <input id="tools-terminal-input" type="text" class="terminal-input" placeholder="输入命令..." autocomplete="off">
+            </div>
+          </div>
         </div>
 
-        <div class="section">
-          <h3>执行历史</h3>
-          <div id="execution-history-list" class="list-container"></div>
+        <div class="terminal-help">
+          <p><strong>💡 提示:</strong> 直接输入命令执行，或从左侧选择工具执行</p>
         </div>
 
         <div class="loading" style="display: none;">加载中...</div>
@@ -596,10 +613,10 @@
       <!-- Terminal Page -->
       <div id="terminal-page" class="page" style="display: none;">
         <div class="page-header">
-          <h2>Agent 终端</h2>
+          <h2>终端</h2>
           <div class="page-actions">
-            <button id="connect-terminal" class="btn-primary">Connect</button>
-            <button id="clear-terminal" class="btn-secondary">Clear</button>
+            <button id="clear-terminal" class="btn-secondary">清空</button>
+            <button id="terminal-settings-btn" class="btn-secondary">设置</button>
           </div>
         </div>
 
@@ -607,13 +624,42 @@
           <div id="terminal-output" class="terminal-output"></div>
           
           <div class="terminal-input-container">
-            <div class="terminal-prompt">></div>
-            <input id="terminal-input" type="text" class="terminal-input" placeholder="Type a command or natural language request..." autocomplete="off">
+            <div class="terminal-prompt">$</div>
+            <input id="terminal-input" type="text" class="terminal-input" placeholder="输入命令..." autocomplete="off">
           </div>
         </div>
 
         <div class="terminal-help">
-          <p><strong>💡 提示:</strong> 输入 <code>/help</code> 查看可用命令，或直接输入自然语言请求</p>
+          <p><strong>💡 提示:</strong> 直接输入命令执行，支持所有系统命令</p>
+        </div>
+
+        <!-- Terminal Settings Modal -->
+        <div id="terminal-settings-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>终端设置</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="terminal-settings-form">
+                <div class="form-group">
+                  <label for="terminal-wait-ms">命令等待时间 (ms)</label>
+                  <input type="number" id="terminal-wait-ms" name="wait_ms" value="3000" min="100" max="10000">
+                  <small class="form-hint">命令执行后等待的时间，确保命令完全执行完成</small>
+                </div>
+                <div class="form-group">
+                  <label class="checkbox-label">
+                    <input type="checkbox" id="terminal-clear-buffer" name="clear_buffer" value="true">
+                    <span>执行命令前清空缓冲区</span>
+                  </label>
+                </div>
+                <div class="form-actions">
+                  <button id="save-terminal-settings" type="button" class="btn-primary">保存</button>
+                  <button id="cancel-terminal-settings" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
         </div>
       </div>
     </main>

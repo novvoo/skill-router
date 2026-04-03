@@ -3,7 +3,7 @@ import { execFile } from "node:child_process";
 import { readFile } from "node:fs/promises";
 import Busboy from "busboy";
 import { extractBytes, getEmbeddingPreset } from "@kreuzberg/node";
-import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from "node:fs";
 import { ContextManager } from "./context/manager.js";
 import { extractAndSaveMemories } from "./context/memory_extractor.js";
 import { taskAPI } from "./api/TaskAPI.js";
@@ -905,6 +905,37 @@ function parseChoiceJson(text) {
         return null;
     }
 }
+function matchSkillByRegex(query, skill) {
+    const queryLower = query.toLowerCase();
+    const skillNameLower = skill.name.toLowerCase();
+    const skillDescLower = (skill.description || "").toLowerCase();
+    // 精确匹配技能名称
+    if (skillNameLower === queryLower) {
+        return 1.0;
+    }
+    // 技能名称包含查询
+    if (skillNameLower.includes(queryLower)) {
+        return 0.8;
+    }
+    // 技能描述包含查询
+    if (skillDescLower.includes(queryLower)) {
+        return 0.6;
+    }
+    // 正则表达式匹配
+    try {
+        const regex = new RegExp(queryLower, 'i');
+        if (regex.test(skillNameLower)) {
+            return 0.7;
+        }
+        if (regex.test(skillDescLower)) {
+            return 0.5;
+        }
+    }
+    catch {
+        // 正则表达式无效，忽略
+    }
+    return 0.0;
+}
 function parseJsonLoose(text) {
     const raw = String(text || "").trim();
     if (!raw)
@@ -1118,6 +1149,9 @@ const CATALOG_PATH = path.resolve(AGENTS_DIR, "CATALOG.md");
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 let cachedCatalog = null;
 let cachedCatalogAt = 0;
+// 缓存技能匹配结果
+const SKILL_MATCH_TTL_MS = 10 * 60 * 1000;
+let cachedSkillMatches = new Map();
 async function loadCatalog() {
     const now = Date.now();
     if (cachedCatalog && now - cachedCatalogAt < CATALOG_TTL_MS)
@@ -1289,6 +1323,12 @@ async function chatCompletionsWithTools(config, { messages, tools, temperature =
 async function chooseSkill(config, query) {
     const catalog = await loadCatalog();
     const skills = catalog.list;
+    // 1. 首先尝试本地快速匹配
+    const localMatch = matchSkillLocally(query, skills);
+    if (localMatch.confidence > 0.8) {
+        return localMatch;
+    }
+    // 2. 如果本地匹配置信度不足，调用 OpenAI API
     const systemContent = [
         "你是一个 Skill 路由器。你只能从可用列表中选择一个最合适的 skill，或者返回 none。只输出 JSON，不要输出其它内容。",
         buildAvailableSkillsPrompt(skills),
@@ -1311,6 +1351,44 @@ async function chooseSkill(config, query) {
     if (!parsed)
         return { skill: "none", confidence: 0.0, reason: "模型输出无法解析为 JSON" };
     return normalizeChosenSkill(parsed, catalog.byName);
+}
+function matchSkillLocally(query, skills) {
+    if (!query || !skills.length) {
+        return { skill: "none", confidence: 0.0, reason: "空查询或无技能可用" };
+    }
+    // 检查缓存
+    const cacheKey = query.trim().toLowerCase();
+    const cached = cachedSkillMatches.get(cacheKey);
+    const now = Date.now();
+    if (cached && now - cached.timestamp < SKILL_MATCH_TTL_MS) {
+        return cached.result;
+    }
+    let bestMatch = { skill: "none", confidence: 0.0, reason: "无匹配技能" };
+    for (const skill of skills) {
+        const score = matchSkillByRegex(query, skill);
+        if (score > bestMatch.confidence) {
+            bestMatch = {
+                skill: skill.name,
+                confidence: score,
+                reason: score === 1.0
+                    ? `精确匹配技能名称: ${skill.name}`
+                    : score >= 0.8
+                        ? `技能名称包含查询: ${skill.name}`
+                        : score >= 0.6
+                            ? `技能描述包含查询: ${skill.description || skill.name}`
+                            : `正则表达式匹配: ${skill.name}`
+            };
+        }
+    }
+    // 缓存结果
+    cachedSkillMatches.set(cacheKey, { result: bestMatch, timestamp: now });
+    // 清理过期缓存
+    for (const [key, value] of cachedSkillMatches.entries()) {
+        if (now - value.timestamp >= SKILL_MATCH_TTL_MS) {
+            cachedSkillMatches.delete(key);
+        }
+    }
+    return bestMatch;
 }
 function buildDocumentBlock(doc) {
     const name = doc.filename || "upload";
@@ -2239,6 +2317,9 @@ export async function handleRequest(req, res) {
             if (req.method === "GET" && url.pathname === "/api/files/cwd") {
                 return await handleFilesCwd(req, res);
             }
+            if (req.method === "GET" && url.pathname === "/api/files/read") {
+                return await handleFilesRead(req, res);
+            }
             if (req.method === "POST" && url.pathname === "/api/files/cwd") {
                 return await handleFilesSetCwd(req, res);
             }
@@ -2247,6 +2328,22 @@ export async function handleRequest(req, res) {
             }
             if (req.method === "POST" && url.pathname === "/api/files/file") {
                 return await handleFilesCreateFile(req, res);
+            }
+            // New file management routes
+            if (req.method === "POST" && url.pathname === "/api/files/edit") {
+                return await handleFilesEdit(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/rename") {
+                return await handleFilesRename(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/copy") {
+                return await handleFilesCopy(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/move") {
+                return await handleFilesMove(req, res);
+            }
+            if (req.method === "POST" && url.pathname === "/api/files/search") {
+                return await handleFilesSearch(req, res);
             }
         }
         if (req.method === "POST" && url.pathname === "/api/agents/spawn") {
@@ -3412,6 +3509,214 @@ async function handleFilesCreateFile(req, res) {
         mkdirSync(path.dirname(newFilePath), { recursive: true });
         writeFileSync(newFilePath, content, 'utf8');
         sendJson(res, 200, { path: newFilePath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesEdit(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { path: filePath, content, summary } = body;
+        if (!filePath || !content) {
+            return sendJson(res, 400, { error: 'File path and content are required' });
+        }
+        const safePath = path.resolve(filePath);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!safePath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        // 检查文件是否存在
+        if (!existsSync(safePath)) {
+            return sendJson(res, 404, { error: 'File not found' });
+        }
+        // 写入文件
+        writeFileSync(safePath, content, 'utf8');
+        sendJson(res, 200, { success: true, path: safePath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesRename(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { oldPath, newPath } = body;
+        if (!oldPath || !newPath) {
+            return sendJson(res, 400, { error: 'Old path and new path are required' });
+        }
+        const safeOldPath = path.resolve(oldPath);
+        const safeNewPath = path.resolve(newPath);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!safeOldPath.startsWith(cwd) || !safeNewPath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        // 检查文件是否存在
+        if (!existsSync(safeOldPath)) {
+            return sendJson(res, 404, { error: 'File not found' });
+        }
+        // 检查目标是否存在
+        if (existsSync(safeNewPath)) {
+            return sendJson(res, 409, { error: 'Target file already exists' });
+        }
+        // 创建目标目录（如果不存在）
+        mkdirSync(path.dirname(safeNewPath), { recursive: true });
+        // 重命名文件
+        renameSync(safeOldPath, safeNewPath);
+        sendJson(res, 200, { success: true, oldPath: safeOldPath, newPath: safeNewPath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesCopy(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { sourcePath, destinationPath } = body;
+        if (!sourcePath || !destinationPath) {
+            return sendJson(res, 400, { error: 'Source path and destination path are required' });
+        }
+        const safeSourcePath = path.resolve(sourcePath);
+        const safeDestinationPath = path.resolve(destinationPath);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!safeSourcePath.startsWith(cwd) || !safeDestinationPath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        // 检查文件是否存在
+        if (!existsSync(safeSourcePath)) {
+            return sendJson(res, 404, { error: 'Source file not found' });
+        }
+        // 检查目标是否存在
+        if (existsSync(safeDestinationPath)) {
+            return sendJson(res, 409, { error: 'Target file already exists' });
+        }
+        // 创建目标目录（如果不存在）
+        mkdirSync(path.dirname(safeDestinationPath), { recursive: true });
+        // 复制文件
+        copyFileSync(safeSourcePath, safeDestinationPath);
+        sendJson(res, 200, { success: true, sourcePath: safeSourcePath, destinationPath: safeDestinationPath });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesMove(req, res) {
+    // Move is just a rename
+    return handleFilesRename(req, res);
+}
+async function handleFilesRead(req, res) {
+    try {
+        const url = new URL(req.url || '', `http://${req.headers.host}`);
+        const filePath = url.searchParams.get('path');
+        if (!filePath) {
+            return sendJson(res, 400, { error: 'File path is required' });
+        }
+        const safePath = path.resolve(filePath);
+        // 安全检查：确保路径在当前工作目录内
+        const cwd = process.cwd();
+        if (!safePath.startsWith(cwd)) {
+            return sendJson(res, 403, { error: 'Access denied' });
+        }
+        // 检查文件是否存在
+        if (!existsSync(safePath)) {
+            return sendJson(res, 404, { error: 'File not found' });
+        }
+        // 读取文件内容
+        const content = readFileSync(safePath, 'utf8');
+        sendJson(res, 200, { content });
+    }
+    catch (error) {
+        sendJson(res, 500, { error: error.message });
+    }
+}
+async function handleFilesSearch(req, res) {
+    try {
+        const body = await readJsonBody(req, 10 * 1024);
+        const { query, options = {} } = body;
+        if (!query) {
+            return sendJson(res, 400, { error: 'Search query is required' });
+        }
+        // 安全检查：确保搜索路径在当前工作目录内
+        const cwd = process.cwd();
+        const targetDirectories = options.targetDirectories || [cwd];
+        for (const dir of targetDirectories) {
+            const safeDir = path.resolve(dir);
+            if (!safeDir.startsWith(cwd)) {
+                return sendJson(res, 403, { error: 'Access denied' });
+            }
+        }
+        // 执行搜索
+        const results = [];
+        for (const dir of targetDirectories) {
+            const safeDir = path.resolve(dir);
+            // 遍历目录
+            async function searchDir(currentDir) {
+                const entries = readdirSync(currentDir, { withFileTypes: true });
+                for (const entry of entries) {
+                    const entryPath = path.join(currentDir, entry.name);
+                    if (entry.isDirectory()) {
+                        // 递归搜索子目录
+                        await searchDir(entryPath);
+                    }
+                    else if (entry.isFile()) {
+                        // 读取文件内容
+                        try {
+                            const content = readFileSync(entryPath, 'utf8');
+                            const searchContent = options.caseSensitive ? content : content.toLowerCase();
+                            const searchQuery = options.caseSensitive ? query : query.toLowerCase();
+                            if (searchContent.includes(searchQuery)) {
+                                // 找到匹配
+                                const lines = content.split('\n');
+                                const matches = [];
+                                lines.forEach((line, lineIndex) => {
+                                    const lineContent = options.caseSensitive ? line : line.toLowerCase();
+                                    let position = lineContent.indexOf(searchQuery);
+                                    while (position !== -1) {
+                                        // 检查完整单词匹配
+                                        if (options.wholeWord) {
+                                            const start = position === 0 || !/\w/.test(lineContent[position - 1]);
+                                            const end = position + searchQuery.length >= lineContent.length || !/\w/.test(lineContent[position + searchQuery.length]);
+                                            if (start && end) {
+                                                matches.push({
+                                                    line: lineIndex + 1,
+                                                    content: line,
+                                                    position: position + 1
+                                                });
+                                            }
+                                        }
+                                        else {
+                                            matches.push({
+                                                line: lineIndex + 1,
+                                                content: line,
+                                                position: position + 1
+                                            });
+                                        }
+                                        position = lineContent.indexOf(searchQuery, position + 1);
+                                    }
+                                });
+                                if (matches.length > 0) {
+                                    results.push({
+                                        path: entryPath,
+                                        matches
+                                    });
+                                }
+                            }
+                        }
+                        catch {
+                            // 忽略无法读取的文件
+                        }
+                    }
+                }
+            }
+            await searchDir(safeDir);
+        }
+        // 限制结果数量
+        const maxResults = options.maxResults || 20;
+        const limitedResults = results.slice(0, maxResults);
+        sendJson(res, 200, limitedResults);
     }
     catch (error) {
         sendJson(res, 500, { error: error.message });

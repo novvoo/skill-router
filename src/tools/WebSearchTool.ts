@@ -1,9 +1,14 @@
 import { z } from 'zod'
 import { buildTool, type ToolDef } from './Tool.js'
-import { createAdapter } from './WebSearchTool/adapters/index.js'
+import { getAdapter, getAdapterNames } from './WebSearchTool/adapters/index.js'
 
 const inputSchema = z.object({
   query: z.string().min(2).describe('The search query to use'),
+  adapter: z
+    .string()
+    .optional()
+    .default('bing')
+    .describe('The search adapter to use (e.g., bing)'),
   allowed_domains: z
     .array(z.string())
     .optional()
@@ -39,27 +44,28 @@ export type WebSearchResult = z.infer<typeof webSearchResultSchema>
 export type WebSearchProgress = {
   type: 'search_start' | 'search_results_received' | 'search_complete' | 'query_update'
   query?: string
+  adapter?: string
   resultCount?: number
   apiUsed?: string
 }
 
 export const WebSearchTool = buildTool({
   name: 'web_search',
+  aliases: ['webSearch'],
   searchHint: 'search the web for current information',
   maxResultSizeChars: 100_000,
   shouldDefer: true,
-  
-  async description(input) {
-    return `Claude wants to search the web for: ${input.query}`
-  },
-  
-  inputSchema,
   inputJSONSchema: {
     type: 'object',
     properties: {
       query: {
         type: 'string',
         description: 'The search query to use'
+      },
+      adapter: {
+        type: 'string',
+        description: 'The search adapter to use (e.g., bing)',
+        default: 'bing'
       },
       allowed_domains: {
         type: 'array',
@@ -78,6 +84,13 @@ export const WebSearchTool = buildTool({
     },
     required: ['query']
   },
+  
+  async description(input) {
+    return `Claude wants to search the web for: ${input.query}`
+  },
+  
+  inputSchema,
+
   outputSchema,
   
   isConcurrencySafe() {
@@ -132,19 +145,20 @@ export const WebSearchTool = buildTool({
   
   async call(input, context, onProgress) {
     const startTime = performance.now()
-    const { query } = input
+    const { query, adapter: adapterName = 'bing' } = input
     
     onProgress?.({
       toolUseID: 'web-search',
       data: {
         type: 'search_start',
         query,
+        adapter: adapterName,
       },
     })
     
     try {
-      // Web search functionality using BingSearchAdapter
-      const adapter = createAdapter()
+      // Web search functionality using specified adapter
+      const adapter = getAdapter(adapterName)
       const adapterResults = await adapter.search(query, {
         allowedDomains: input.allowed_domains,
         blockedDomains: input.blocked_domains,
@@ -186,7 +200,7 @@ export const WebSearchTool = buildTool({
             content: adapterResults
           },
           `Found ${adapterResults.length} results for "${query}"`,
-          `Search API: Bing`,
+          `Search API: ${adapterName.charAt(0).toUpperCase() + adapterName.slice(1)}`,
           ...searchContent
         ],
         durationSeconds

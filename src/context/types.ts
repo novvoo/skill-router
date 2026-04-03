@@ -29,6 +29,11 @@ export interface RetrievalOptions {
   maxResults?: number;
   minScore?: number;
   targetDirectories?: string[]; // Limit search to specific virtual directories
+  fileTypes?: string[]; // Limit search to specific file types
+  sortBy?: 'relevance' | 'date' | 'name'; // Sort results by different criteria
+  caseSensitive?: boolean; // Case sensitivity for keyword search
+  phraseSearch?: boolean; // Enable phrase search
+  excludePaths?: string[]; // Exclude specific paths from search
 }
 
 export interface RetrievalResult {

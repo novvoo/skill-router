@@ -190,7 +190,16 @@ export class StreamingToolExecutor extends ToolExecutor {
       }
       
       // Execute the tool
-      const result = await tool.call(args, toolContext)
+      const result = await tool.call(args, toolContext, (progress) => {
+        this.emitProgress({
+          stage: 'tool_progress',
+          toolId: id,
+          toolName: name,
+          message: progress.data?.query ? `Searching for ${progress.data.query}` : name,
+          status: 'executing',
+          data: progress.data,
+        })
+      })
       
       const duration = Date.now() - startTime
       const toolResult: ToolCallResult = {
