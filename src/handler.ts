@@ -1390,6 +1390,7 @@ async function chatCompletionsWithTools(
       sessionId,
       onProgress,
       abortController,
+      executeTools,  // 确保传递这个参数
     });
   }
 

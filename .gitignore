@@ -43,3 +43,6 @@ Thumbs.db
 
 # Docker
 docker-compose.override.yml
+
+test*.js
+test*.ts

@@ -7,7 +7,7 @@ import axios from 'axios'
 import he from 'he'
 import type { SearchResult, SearchOptions, WebSearchAdapter } from './types.js'
 
-const FETCH_TIMEOUT_MS = 30_000
+const FETCH_TIMEOUT_MS = 10_000
 
 /**
  * Decode HTML entities using the 'he' library
@@ -161,6 +161,8 @@ export class BingSearchAdapter implements WebSearchAdapter {
         .map(([key, value]) => `${key}=${value}`)
         .join('; ')
       
+      console.log(`[BingSearch] Fetching: ${url}`)
+      
       const response = await axios.get(url, {
         signal: abortController.signal,
         timeout: FETCH_TIMEOUT_MS,
@@ -172,11 +174,25 @@ export class BingSearchAdapter implements WebSearchAdapter {
         maxRedirects: 5, // 支持最多5次跳转
       })
       html = response.data
+      console.log(`[BingSearch] Fetched successfully, content length: ${html.length}`)
     } catch (e) {
       if (axios.isCancel(e) || abortController.signal.aborted) {
+        console.log('[BingSearch] Search aborted')
         throw new Error('Search aborted')
       }
-      throw e
+      console.error('[BingSearch] Error fetching:', e)
+      // 提供更友好的错误信息
+      let errorMessage = 'Network error'
+      if (axios.isAxiosError(e)) {
+        if (e.code === 'ECONNABORTED') {
+          errorMessage = `Request timed out after ${FETCH_TIMEOUT_MS}ms`
+        } else if (e.response) {
+          errorMessage = `HTTP ${e.response.status}: ${e.response.statusText}`
+        } else if (e.request) {
+          errorMessage = 'No response received from server'
+        }
+      }
+      throw new Error(errorMessage)
     }
 
     const rawResults = extractBingResults(html)
