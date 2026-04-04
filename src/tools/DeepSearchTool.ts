@@ -94,6 +94,8 @@ async function executeWebSearch(
   blockedDomains: string[] | undefined,
   context: any
 ): Promise<{ results: SearchResult[], fullOutput: WebSearchOutput }> {
+  console.log(`[DeepSearch] executeWebSearch called with query: "${query}"`)
+  
   const toolExecutor = new ToolExecutor(context.config)
   
   const toolCall: ToolCall = {
@@ -102,22 +104,31 @@ async function executeWebSearch(
     arguments: { query, adapter, allowed_domains: allowedDomains, blocked_domains: blockedDomains }
   }
   
+  console.log(`[DeepSearch] Executing web_search tool call`)
+  
   const result = await toolExecutor.executeToolCall(toolCall, {
     sessionId: context.sessionId,
     abortController: context.abortController
   })
   
   if (result.error) {
+    console.error(`[DeepSearch] web_search failed:`, result.error)
     throw new Error(result.error)
   }
   
   const output = result.result as WebSearchOutput
+  console.log(`[DeepSearch] web_search returned ${output.results.length} items`)
+  
   const searchResults: SearchResult[] = []
   for (const item of output.results) {
     if (typeof item === 'object' && item !== null && 'content' in item) {
-      searchResults.push(...(item.content as SearchResult[]))
+      const content = item.content as SearchResult[]
+      searchResults.push(...content)
+      console.log(`[DeepSearch] Found ${content.length} search results`)
     }
   }
+  
+  console.log(`[DeepSearch] Total search results extracted: ${searchResults.length}`)
   return { results: searchResults, fullOutput: output }
 }
 
@@ -125,6 +136,8 @@ async function executeWebFetch(
   url: string, 
   context: any
 ): Promise<string> {
+  console.log(`[DeepSearch] executeWebFetch called with url: ${url}`)
+  
   const toolExecutor = new ToolExecutor(context.config)
   
   const toolCall: ToolCall = {
@@ -133,17 +146,22 @@ async function executeWebFetch(
     arguments: { url, internal: true }
   }
   
+  console.log(`[DeepSearch] Executing web_fetch tool call for ${url}`)
+  
   const result = await toolExecutor.executeToolCall(toolCall, {
     sessionId: context.sessionId,
     abortController: context.abortController
   })
   
   if (result.error) {
-    console.error(`Failed to fetch ${url}:`, result.error)
+    console.error(`[DeepSearch] Failed to fetch ${url}:`, result.error)
     return ''
   }
   
   const output = result.result as WebFetchOutput
+  console.log(`[DeepSearch] web_fetch for ${url} completed with status ${output.code}`)
+  console.log(`[DeepSearch] Fetched content length: ${output.result.length} characters`)
+  
   return output.result
 }
 

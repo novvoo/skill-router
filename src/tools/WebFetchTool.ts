@@ -26,7 +26,7 @@ function generateScreenResolution(): { width: number; height: number } {
   return { width, height }
 }
 
-function generateBrowserHeaders() {
+function generateBrowserHeaders(refererUrl: string = 'https://www.google.com/') {
   const chromeVersion = generateChromeVersion()
   const screen = generateScreenResolution()
   
@@ -51,11 +51,14 @@ function generateBrowserHeaders() {
     'Sec-Fetch-Site': 'none',
     'Sec-Fetch-User': '?1',
     'Upgrade-Insecure-Requests': '1',
-    'Referer': 'https://www.bing.com/',
+    'Referer': refererUrl,
   }
 }
 
-function generateCookies() {
+function generateCookies(isBing: boolean = false) {
+  if (!isBing) {
+    return {}
+  }
   const screen = generateScreenResolution()
   return {
     'MUID': generateHex(32),
@@ -121,12 +124,27 @@ async function fetchUrlContent(url: string, signal?: AbortSignal): Promise<{
   }
 
   try {
-    const dynamicHeaders = generateBrowserHeaders()
-    const dynamicCookies = generateCookies()
+    let hostname = ''
+    try {
+      hostname = new URL(url).hostname
+    } catch {
+      hostname = 'unknown'
+    }
+    
+    console.log(`[WebFetch] Fetching: ${url}`)
+    
+    const isBing = hostname.includes('bing.com')
+    const refererUrl = isBing ? 'https://www.bing.com/' : 'https://www.google.com/'
+    
+    const dynamicHeaders = generateBrowserHeaders(refererUrl)
+    const dynamicCookies = generateCookies(isBing)
     
     const cookieString = Object.entries(dynamicCookies)
       .map(([key, value]) => `${key}=${value}`)
       .join('; ')
+
+    console.log(`[WebFetch] Using headers with referer: ${refererUrl}`)
+    console.log(`[WebFetch] Using cookies: ${cookieString ? 'Yes' : 'No'}`)
 
     const response = await axios.get(url, {
       signal: abortController.signal,
@@ -142,6 +160,8 @@ async function fetchUrlContent(url: string, signal?: AbortSignal): Promise<{
     const bytes = parseInt(response.headers['content-length'] || '0')
     const contentType = response.headers['content-type'] || 'text/plain'
     
+    console.log(`[WebFetch] Fetched successfully, status: ${response.status}, content length: ${response.data.length}`)
+    
     return {
       content: response.data,
       bytes: bytes || response.data.length,
@@ -150,6 +170,7 @@ async function fetchUrlContent(url: string, signal?: AbortSignal): Promise<{
       contentType,
     }
   } catch (error) {
+    console.error('[WebFetch] Error fetching:', error)
     if (axios.isCancel(error) || abortController.signal.aborted) {
       throw new Error('Fetch aborted')
     }

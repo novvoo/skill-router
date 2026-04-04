@@ -104,6 +104,8 @@ export class ChatModule extends BaseModule {
 
     const files = Array.from(fileInput?.files || []);
     
+    console.log('[ChatModule] sendMessage called, current messages length:', this.messages.length);
+    
     // Add user message
     this.addMessage('user', message);
     input.value = '';
@@ -111,6 +113,7 @@ export class ChatModule extends BaseModule {
     
     // Add thinking message
     const thinkingIndex = this.messages.length;
+    console.log('[ChatModule] Adding thinking message at index:', thinkingIndex);
     this.addMessage('assistant', '思考中…', '进行中：等待服务端响应');
     
     try {
@@ -185,10 +188,20 @@ export class ChatModule extends BaseModule {
   }
 
   handleStreamEvent(eventType, data, messageIndex) {
+    console.log('[ChatModule] handleStreamEvent:', { eventType, data, messageIndex });
+    
     if (eventType === 'stage') {
       try {
-        const stage = JSON.parse(data);
+        let stage;
+        if (typeof data === 'string') {
+          stage = JSON.parse(data);
+        } else {
+          stage = data;
+        }
+        
         const message = stage.message || '处理中';
+        
+        console.log('[ChatModule] Parsed stage:', stage);
         
         // Save process logs
         if (!this.processLogs.has(messageIndex)) {
@@ -201,22 +214,30 @@ export class ChatModule extends BaseModule {
         
         this.updateMessage(messageIndex, '思考中…', `进行中：${message}`);
       } catch (e) {
-        console.warn('Failed to parse stage event:', e);
-        console.warn('Raw stage data:', data);
+        console.warn('[ChatModule] Failed to parse stage event:', e);
+        console.warn('[ChatModule] Raw stage data:', data);
       }
     } else if (eventType === 'result') {
+      console.log('[ChatModule] Received result event:', data);
       // Final result will be handled after stream ends
     } else if (eventType === 'error') {
       try {
         // Clean data to remove any leading/trailing whitespace
-        const cleanedData = data.trim();
-        const error = JSON.parse(cleanedData);
+        let error;
+        if (typeof data === 'string') {
+          const cleanedData = data.trim();
+          error = JSON.parse(cleanedData);
+        } else {
+          error = data;
+        }
         throw new Error(error.error || '服务端错误');
       } catch (e) {
-        console.warn('Failed to parse error event:', e);
-        console.warn('Raw error data:', data);
+        console.warn('[ChatModule] Failed to parse error event:', e);
+        console.warn('[ChatModule] Raw error data:', data);
         throw new Error(data || '服务端错误');
       }
+    } else {
+      console.log('[ChatModule] Unknown event type:', eventType);
     }
   }
 
@@ -328,14 +349,22 @@ export class ChatModule extends BaseModule {
   }
   
   renderLogs() {
+    console.log('[ChatModule] renderLogs called');
+    
     const logsContainer = this.element?.querySelector('#chat-logs');
-    if (!logsContainer) return;
+    if (!logsContainer) {
+      console.warn('[ChatModule] chat-logs container not found');
+      return;
+    }
     
     logsContainer.innerHTML = '';
     
     // Get logs for the latest message
     const latestIndex = this.messages.length - 1;
+    console.log('[ChatModule] latestIndex:', latestIndex);
+    
     const logs = this.processLogs.get(latestIndex);
+    console.log('[ChatModule] logs found:', logs);
     
     if (logs && logs.length > 0) {
       const logList = this.createElement('ul', 'message-logs-list');
@@ -348,9 +377,11 @@ export class ChatModule extends BaseModule {
         logList.appendChild(logItem);
       });
       logsContainer.appendChild(logList);
+      console.log('[ChatModule] Logs rendered:', logs.length, 'items');
     } else {
       const emptyMessage = this.createElement('div', 'empty-logs', '暂无处理过程日志');
       logsContainer.appendChild(emptyMessage);
+      console.log('[ChatModule] No logs to display');
     }
   }
 
