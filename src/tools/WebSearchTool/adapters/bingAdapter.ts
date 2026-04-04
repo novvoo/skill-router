@@ -46,9 +46,36 @@ function generateScreenResolution(): { width: number; height: number } {
 }
 
 /**
+ * Browser header type definition
+ */
+type BrowserHeaders = {
+  'User-Agent': string
+  'Accept': string
+  'Accept-Language': string
+  'Accept-Encoding': string
+  'Cache-Control': string
+  'Pragma': string
+  'Sec-Ch-Ua': string
+  'Sec-Ch-Ua-Arch': string
+  'Sec-Ch-Ua-Bitness': string
+  'Sec-Ch-Ua-Full-Version': string
+  'Sec-Ch-Ua-Full-Version-List': string
+  'Sec-Ch-Ua-Mobile': string
+  'Sec-Ch-Ua-Model': string
+  'Sec-Ch-Ua-Platform': string
+  'Sec-Ch-Ua-Platform-Version': string
+  'Sec-Fetch-Dest': string
+  'Sec-Fetch-Mode': string
+  'Sec-Fetch-Site': string
+  'Sec-Fetch-User': string
+  'Upgrade-Insecure-Requests': string
+  'Referer': string
+}
+
+/**
  * Generate dynamic browser headers (fingerprint)
  */
-function generateBrowserHeaders(): typeof BROWSER_HEADERS {
+function generateBrowserHeaders(): BrowserHeaders {
   const chromeVersion = generateChromeVersion()
   const screen = generateScreenResolution()
   
@@ -96,12 +123,12 @@ function generateCookies(): Record<string, string> {
  * Browser-like headers to avoid Bing's anti-bot JS-rendered response.
  * These mimic Google Chrome on Windows to get full HTML search results.
  */
-const BROWSER_HEADERS = generateBrowserHeaders()
+const BROWSER_HEADERS: BrowserHeaders = generateBrowserHeaders()
 
 /**
  * Default cookies for Bing search to get personalized results
  */
-const DEFAULT_COOKIES = generateCookies()
+const DEFAULT_COOKIES: Record<string, string> = generateCookies()
 
 export class BingSearchAdapter implements WebSearchAdapter {
   async search(
