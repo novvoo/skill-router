@@ -1,9 +1,76 @@
 import { z } from 'zod'
 import { buildTool, type ToolDef } from './Tool.js'
+import axios from 'axios'
+
+const FETCH_TIMEOUT_MS = 30_000
+
+function generateHex(length: number): string {
+  let result = ''
+  const characters = '0123456789ABCDEF'
+  for (let i = 0; i < length; i++) {
+    result += characters.charAt(Math.floor(Math.random() * characters.length))
+  }
+  return result
+}
+
+function generateChromeVersion(): string {
+  const major = Math.floor(Math.random() * 10) + 140
+  const minor = Math.floor(Math.random() * 10000)
+  return `${major}.0.${minor}.${Math.floor(Math.random() * 255)}`
+}
+
+function generateScreenResolution(): { width: number; height: number } {
+  const widths = [1920, 1366, 1536, 1440, 1280]
+  const width = widths[Math.floor(Math.random() * widths.length)]
+  const height = Math.floor(width * 9 / 16)
+  return { width, height }
+}
+
+function generateBrowserHeaders() {
+  const chromeVersion = generateChromeVersion()
+  const screen = generateScreenResolution()
+  
+  return {
+    'User-Agent': `Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/${chromeVersion} Safari/537.36`,
+    'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+    'Accept-Language': 'en,zh-CN;q=0.9,zh;q=0.8',
+    'Accept-Encoding': 'gzip, deflate, br',
+    'Cache-Control': 'no-cache',
+    'Pragma': 'no-cache',
+    'Sec-Ch-Ua': `"Chromium";v="${chromeVersion.split('.')[0]}", "Not-A.Brand";v="24", "Google Chrome";v="${chromeVersion.split('.')[0]}"`,
+    'Sec-Ch-Ua-Arch': '"x86"',
+    'Sec-Ch-Ua-Bitness': '"64"',
+    'Sec-Ch-Ua-Full-Version': `"${chromeVersion}"`,
+    'Sec-Ch-Ua-Full-Version-List': `"Chromium";v="${chromeVersion}", "Not-A.Brand";v="24.0.0.0", "Google Chrome";v="${chromeVersion}"`,
+    'Sec-Ch-Ua-Mobile': '?0',
+    'Sec-Ch-Ua-Model': '""',
+    'Sec-Ch-Ua-Platform': '"Windows"',
+    'Sec-Ch-Ua-Platform-Version': '"10.0.0"',
+    'Sec-Fetch-Dest': 'document',
+    'Sec-Fetch-Mode': 'navigate',
+    'Sec-Fetch-Site': 'none',
+    'Sec-Fetch-User': '?1',
+    'Upgrade-Insecure-Requests': '1',
+    'Referer': 'https://www.bing.com/',
+  }
+}
+
+function generateCookies() {
+  const screen = generateScreenResolution()
+  return {
+    'MUID': generateHex(32),
+    'SRCHD': 'AF=NOFORM',
+    'SRCHUID': `V=2&GUID=${generateHex(32)}&dmnchg=1`,
+    'SRCHHPGUSR': `SRCHLANG=zh-Hans&PV=10.0.0&BZA=0&PREFCOL=1&BRW=XW&BRH=M&CW=${screen.width}&CH=${screen.height}&SCW=${screen.width}&SCH=${screen.height}&DPR=1.0&UTC=480&B=0&EXLTT=6&AV=14&ADV=14`,
+    '_EDGE_S': `SID=${generateHex(32)}&mkt=zh-CN&ui=zh-cn`,
+    'USRLOC': 'HS=1&ELOC=LAT=31.201019287109375|LON=121.40116882324219|N=%E9%95%BF%E5%AE%81%E5%8C%BA%EF%BC%8C%E4%B8%8A%E6%B5%B7%E5%B8%82|ELT=4|',
+  }
+}
 
 const inputSchema = z.object({
   url: z.string().url().describe('The URL to fetch content from'),
   prompt: z.string().describe('The prompt to run on the fetched content').optional(),
+  internal: z.boolean().describe('Internal call flag (e.g., from deep search)').optional().default(false),
 })
 
 const outputSchema = z.object({
@@ -48,48 +115,53 @@ async function fetchUrlContent(url: string, signal?: AbortSignal): Promise<{
   codeText: string
   contentType: string
 }> {
-  const controller = new AbortController()
-  const timeoutId = setTimeout(() => controller.abort(), 30000) // 30s timeout
-  
-  const combinedSignal = signal ? 
-    AbortSignal.any([signal, controller.signal]) : 
-    controller.signal
+  const abortController = new AbortController()
+  if (signal) {
+    signal.addEventListener('abort', () => abortController.abort(), { once: true })
+  }
 
   try {
-    const response = await fetch(url, {
-      signal: combinedSignal,
+    const dynamicHeaders = generateBrowserHeaders()
+    const dynamicCookies = generateCookies()
+    
+    const cookieString = Object.entries(dynamicCookies)
+      .map(([key, value]) => `${key}=${value}`)
+      .join('; ')
+
+    const response = await axios.get(url, {
+      signal: abortController.signal,
+      timeout: FETCH_TIMEOUT_MS,
+      responseType: 'text',
       headers: {
-        'User-Agent': 'SkillRouter/1.0 (Web Content Fetcher)',
-        'Accept': 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.8,*/*;q=0.7',
+        ...dynamicHeaders,
+        'Cookie': cookieString,
       },
+      maxRedirects: 5,
     })
 
-    clearTimeout(timeoutId)
-
-    const bytes = parseInt(response.headers.get('content-length') || '0')
-    const contentType = response.headers.get('content-type') || 'text/plain'
-    
-    if (!response.ok) {
-      return {
-        content: `HTTP Error ${response.status}: ${response.statusText}`,
-        bytes: 0,
-        code: response.status,
-        codeText: response.statusText,
-        contentType,
-      }
-    }
-
-    const text = await response.text()
+    const bytes = parseInt(response.headers['content-length'] || '0')
+    const contentType = response.headers['content-type'] || 'text/plain'
     
     return {
-      content: text,
-      bytes: bytes || text.length,
+      content: response.data,
+      bytes: bytes || response.data.length,
       code: response.status,
       codeText: response.statusText,
       contentType,
     }
   } catch (error) {
-    clearTimeout(timeoutId)
+    if (axios.isCancel(error) || abortController.signal.aborted) {
+      throw new Error('Fetch aborted')
+    }
+    if (axios.isAxiosError(error)) {
+      return {
+        content: `HTTP Error ${error.response?.status || 0}: ${error.response?.statusText || error.message}`,
+        bytes: 0,
+        code: error.response?.status || 0,
+        codeText: error.response?.statusText || error.message,
+        contentType: 'text/plain',
+      }
+    }
     throw error
   }
 }
@@ -181,6 +253,14 @@ export const WebFetchTool = buildTool({
   },
   
   async checkPermissions(input, context) {
+    // 如果是内部调用（如来自深度搜索），直接允许
+    if (input.internal) {
+      return {
+        behavior: 'allow',
+        updatedInput: input,
+      }
+    }
+    
     try {
       const { url } = input
       const parsedUrl = new URL(url)

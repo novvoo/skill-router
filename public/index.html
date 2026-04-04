@@ -30,7 +30,12 @@
           <span class="nav-text">Agent</span>
           <span class="nav-shortcut">Ctrl+2</span>
         </a>
-        <a href="#" class="nav-item active" data-route="tools">
+        <a href="#" class="nav-item" data-route="deepsearch">
+          <span class="nav-icon">🔍</span>
+          <span class="nav-text">深度搜索</span>
+          <span class="nav-shortcut">Ctrl+9</span>
+        </a>
+        <a href="#" class="nav-item" data-route="tools">
           <span class="nav-icon">🔧</span>
           <span class="nav-text">工具</span>
           <span class="nav-shortcut">Ctrl+3</span>
@@ -511,21 +516,42 @@
           </div>
         </div>
 
-        <!-- Current Working Directory -->
-        <div class="section">
-          <div class="cwd-display">
-            <h3>当前工作目录</h3>
-            <div class="cwd-path" id="current-cwd">加载中...</div>
-            <div class="cwd-actions">
-              <button id="set-cwd-btn" class="btn-secondary">设置工作目录</button>
+        <div class="files-layout">
+          <!-- File Browser Sidebar -->
+          <div class="files-sidebar">
+            <!-- Current Working Directory -->
+            <div class="sidebar-section">
+              <h3>当前工作目录</h3>
+              <div class="cwd-path" id="current-cwd">加载中...</div>
+              <div class="cwd-actions">
+                <button id="set-cwd-btn" class="btn-secondary">设置工作目录</button>
+              </div>
+            </div>
+            <!-- Directory Content -->
+            <div class="sidebar-section">
+              <h3>目录内容</h3>
+              <div id="directory-content" class="list-container"></div>
             </div>
           </div>
-        </div>
 
-        <!-- Directory Content -->
-        <div class="section">
-          <h3>目录内容</h3>
-          <div id="directory-content" class="list-container"></div>
+          <!-- Editor Panel -->
+          <div class="editor-panel" id="editor-panel">
+            <div class="editor-header">
+              <div class="editor-title">
+                <span id="editor-file-name">未打开文件</span>
+              </div>
+              <div class="editor-actions">
+                <button id="save-file-btn" class="btn-primary" style="display: none;">保存</button>
+                <button id="close-editor-btn" class="btn-secondary" style="display: none;">关闭</button>
+              </div>
+            </div>
+            <div class="editor-content">
+              <div id="editor-empty-state" class="empty-state">
+                选择一个文件进行编辑
+              </div>
+              <textarea id="editor-textarea" style="display: none;"></textarea>
+            </div>
+          </div>
         </div>
 
         <!-- Create Directory Modal -->
@@ -606,6 +632,84 @@
           </div>
         </div>
 
+        <!-- Rename File Modal -->
+        <div id="rename-file-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>重命名文件</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="rename-file-form">
+                <div class="form-group">
+                  <label for="rename-old-path">当前路径</label>
+                  <input type="text" id="rename-old-path" disabled>
+                </div>
+                <div class="form-group">
+                  <label for="rename-new-name">新文件名</label>
+                  <input type="text" id="rename-new-name">
+                </div>
+                <div class="form-actions">
+                  <button id="submit-rename-btn" type="button" class="btn-primary">重命名</button>
+                  <button id="cancel-rename-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Copy File Modal -->
+        <div id="copy-file-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>复制文件</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="copy-file-form">
+                <div class="form-group">
+                  <label for="copy-source-path">源文件</label>
+                  <input type="text" id="copy-source-path" disabled>
+                </div>
+                <div class="form-group">
+                  <label for="copy-destination-path">目标路径</label>
+                  <input type="text" id="copy-destination-path">
+                </div>
+                <div class="form-actions">
+                  <button id="submit-copy-btn" type="button" class="btn-primary">复制</button>
+                  <button id="cancel-copy-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
+        <!-- Move File Modal -->
+        <div id="move-file-modal" class="modal" style="display: none;">
+          <div class="modal-content">
+            <div class="modal-header">
+              <h3>移动文件</h3>
+              <button class="modal-close">&times;</button>
+            </div>
+            <div class="modal-body">
+              <form id="move-file-form">
+                <div class="form-group">
+                  <label for="move-source-path">源文件</label>
+                  <input type="text" id="move-source-path" disabled>
+                </div>
+                <div class="form-group">
+                  <label for="move-destination-path">目标路径</label>
+                  <input type="text" id="move-destination-path">
+                </div>
+                <div class="form-actions">
+                  <button id="submit-move-btn" type="button" class="btn-primary">移动</button>
+                  <button id="cancel-move-btn" type="button" class="btn-secondary">取消</button>
+                </div>
+              </form>
+            </div>
+          </div>
+        </div>
+
         <div class="loading" style="display: none;">加载中...</div>
         <div class="status-message"></div>
       </div>
@@ -658,6 +762,87 @@
                   <button id="cancel-terminal-settings" type="button" class="btn-secondary">取消</button>
                 </div>
               </form>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Deep Search Page -->
+      <div id="deepsearch-page" class="page" style="display: none;">
+        <div class="page-header">
+          <h2>深度搜索</h2>
+          <div class="page-actions">
+            <button id="clear-deepsearch" class="btn-secondary">清空结果</button>
+          </div>
+        </div>
+
+        <div class="deepsearch-layout">
+          <!-- Search Configuration -->
+          <div class="search-config">
+            <div class="form-group">
+              <label for="deepsearch-query">搜索关键词</label>
+              <input type="text" id="deepsearch-query" placeholder="输入要搜索的内容..." class="search-input">
+            </div>
+            
+            <div class="form-row">
+              <div class="form-group">
+                <label for="deepsearch-depth">搜索深度</label>
+                <select id="deepsearch-depth" class="form-select">
+                  <option value="1">1 级</option>
+                  <option value="2" selected>2 级</option>
+                  <option value="3">3 级</option>
+                  <option value="4">4 级</option>
+                  <option value="5">5 级</option>
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label for="deepsearch-results">每页结果数</label>
+                <select id="deepsearch-results" class="form-select">
+                  <option value="3">3</option>
+                  <option value="5" selected>5</option>
+                  <option value="10">10</option>
+                  <option value="20">20</option>
+                </select>
+              </div>
+            </div>
+            
+            <div class="form-row">
+              <div class="form-group">
+                <label for="deepsearch-concurrent">并发请求数</label>
+                <select id="deepsearch-concurrent" class="form-select">
+                  <option value="1">1</option>
+                  <option value="3">3</option>
+                  <option value="5" selected>5</option>
+                  <option value="10">10</option>
+                </select>
+              </div>
+              
+              <div class="form-group">
+                <label class="checkbox-label">
+                  <input type="checkbox" id="deepsearch-fetch" checked>
+                  <span>获取网页内容</span>
+                </label>
+              </div>
+            </div>
+            
+            <div class="form-actions">
+              <button id="deepsearch-start" class="btn-primary">开始搜索</button>
+            </div>
+          </div>
+
+          <!-- Search Progress -->
+          <div class="search-progress" id="search-progress" style="display: none;">
+            <div class="progress-bar">
+              <div class="progress-fill" id="progress-fill"></div>
+            </div>
+            <div class="progress-text" id="progress-text">准备搜索...</div>
+          </div>
+
+          <!-- Search Results -->
+          <div class="search-results" id="search-results">
+            <div class="empty-state">
+              <p>输入关键词开始深度搜索</p>
             </div>
           </div>
         </div>

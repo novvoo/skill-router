@@ -11,6 +11,9 @@ export interface AgentDefinition {
   memory?: string
   color?: string
   source: 'builtin' | 'custom' | 'project'
+  maxToolCalls?: number
+  maxExecutionTimeMs?: number
+  maxConcurrentTools?: number
 }
 
 import type { OpenAIConfig } from '../handler.js'
@@ -50,6 +53,10 @@ export class AgentInstance {
   public readonly options: SpawnOptions
   private startTime: number
   private abortController: AbortController
+  private toolCallCount: number = 0
+  private maxToolCalls: number
+  private maxExecutionTimeMs: number
+  private messages: Array<{ role: string; content: string | null; tool_calls?: any[] }> = []
 
   constructor(
     id: string,
@@ -63,6 +70,8 @@ export class AgentInstance {
     this.options = options
     this.startTime = Date.now()
     this.abortController = new AbortController()
+    this.maxToolCalls = definition.maxToolCalls || 50
+    this.maxExecutionTimeMs = definition.maxExecutionTimeMs || 30 * 60 * 1000 // 30 minutes default
   }
 
   async execute(): Promise<AgentResult> {
@@ -72,8 +81,12 @@ export class AgentInstance {
       data: { agentId: this.id, agentType: this.definition.agentType }
     })
 
+    // Set up execution timeout
+    const timeoutId = setTimeout(() => {
+      this.abort()
+    }, this.maxExecutionTimeMs)
+
     try {
-      // 调用实际的LLM API
       const result = await this.executeWithLLM()
       
       this.options.onProgress?.({
@@ -90,41 +103,33 @@ export class AgentInstance {
         data: { agentId: this.id, error }
       })
       throw error
+    } finally {
+      clearTimeout(timeoutId)
     }
   }
 
   private async executeWithLLM(): Promise<AgentResult> {
-    // 导入必要的模块
     const { ToolExecutor } = await import('../tools/ToolExecutor.js')
-    // 直接使用类型，不需要动态导入
     
-    // 优先使用传递的openaiConfig，否则从环境变量获取
     let apiKey = this.options.openaiConfig?.apiKey || String(process.env.OPENAI_API_KEY || "").trim()
     let baseUrl = this.options.openaiConfig?.baseUrl || String(process.env.OPENAI_BASE_URL || "").trim()
     let model = this.options.openaiConfig?.model || this.options.model || String(process.env.OPENAI_MODEL || "").trim()
     
     if (!apiKey || !baseUrl || !model) {
-      // 如果没有配置，返回模拟结果
       return this.generateMockResponse()
     }
     
-    // 创建工具执行器
-    const config: OpenAIConfig = {
-      apiKey,
-      baseUrl,
-      model
-    }
+    const config: OpenAIConfig = { apiKey, baseUrl, model }
+    const toolExecutor = new ToolExecutor(config, {
+      maxConcurrentTools: this.definition.maxConcurrentTools || 3
+    })
     
-    const toolExecutor = new ToolExecutor(config)
-    
-    // 准备工具列表
     const availableTools = toolExecutor.getAvailableTools()
     const toolsForAgent = availableTools.filter(tool => 
       !this.definition.requiredTools || 
       this.definition.requiredTools.includes(tool.name)
     )
     
-    // 准备工具模式
     const tools = toolsForAgent.map(tool => ({
       name: tool.name,
       description: tool.searchHint || tool.name,
@@ -134,127 +139,96 @@ export class AgentInstance {
       },
     }))
     
-    // 准备系统提示
-    const systemPrompt = `
-You are ${this.definition.name}, ${this.definition.description}
+    const systemPrompt = this.buildSystemPrompt(tools)
+    
+    this.messages = [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: this.prompt }
+    ]
+    
+    let totalTokens = 0
+    let toolUses = 0
+    let iterations = 0
+    const maxIterations = Math.min(this.maxToolCalls, 100)
+    
+    while (iterations < maxIterations && !this.isAborted) {
+      iterations++
+      
+      this.options.onProgress?.({
+        stage: 'agent_thinking',
+        message: `Iteration ${iterations}/${maxIterations}`,
+        data: { iteration: iterations }
+      })
+      
+      const response = await this.callLLM(tools)
+      
+      if (!response) {
+        break
+      }
+      
+      this.messages.push(response)
+      
+      const assistantMessage = response.content || ''
+      const toolCalls = response.tool_calls || this.parseToolCalls(assistantMessage)
+      
+      if (toolCalls.length === 0) {
+        break
+      }
+      
+      if (this.toolCallCount + toolCalls.length > this.maxToolCalls) {
+        this.options.onProgress?.({
+          stage: 'agent_warning',
+          message: `Tool call limit reached (${this.maxToolCalls})`,
+          data: { limit: this.maxToolCalls }
+        })
+        break
+      }
+      
+      const toolResults = await this.executeToolCalls(toolCalls, toolExecutor)
+      toolUses += toolResults.length
+      this.toolCallCount += toolResults.length
+      
+      for (const result of toolResults) {
+        this.messages.push({
+          role: 'tool',
+          content: JSON.stringify(result.result || { error: result.error }),
+          tool_calls: [{ id: result.id }]
+        })
+      }
+    }
+    
+    const finalMessage = this.messages.findLast(m => m.role === 'assistant')
+    const finalContent = finalMessage?.content || 'Task completed.'
+    
+    return {
+      content: finalContent,
+      usage: {
+        totalTokens,
+        toolUses,
+        durationMs: Date.now() - this.startTime
+      }
+    }
+  }
+
+  private buildSystemPrompt(tools: any[]): string {
+    return `You are ${this.definition.name}, ${this.definition.description}
 
 ${this.definition.systemPrompt}
 
 Available tools:
 ${tools.map(t => `- ${t.name}: ${t.description}`).join('\n')}
 
-When using tools, format your response as:
-\`\`\`tool:{tool_name}
-{json_arguments}
-\`\`\`
-
-For example:
-\`\`\`tool:web_search
-{"query": "latest AI developments"}
-\`\`\`
-    `
-    
-    // 调用LLM API
-    try {
-      const response = await this.callLLM(systemPrompt, this.prompt, tools)
-      
-      // 解析工具调用
-      const toolCalls = this.parseToolCalls(response)
-      
-      // 执行工具调用
-      const toolResults = []
-      for (const toolCall of toolCalls) {
-        // 显示工具调用开始
-        console.log(`🔧 Executing tool: ${toolCall.name}`)
-        console.log(`   Arguments: ${JSON.stringify(toolCall.arguments)}`)
-        
-        this.options.onProgress?.({
-          stage: 'tool_start',
-          message: `Using tool: ${toolCall.name}`,
-          data: { toolName: toolCall.name, toolId: toolCall.id, arguments: toolCall.arguments }
-        })
-        
-        const result = await toolExecutor.executeToolCall(toolCall, {
-          sessionId: this.options.sessionId,
-          abortController: this.abortController
-        })
-        
-        // 显示工具调用结果
-        console.log(`✅ Tool execution completed: ${toolCall.name}`)
-        console.log(`   Result: ${JSON.stringify(result.result)}`)
-        
-        toolResults.push(result)
-        
-        this.options.onProgress?.({ 
-          stage: 'tool_complete',
-          message: `Tool completed: ${toolCall.name}`,
-          data: { toolName: toolCall.name, toolId: toolCall.id, result: result.result }
-        })
-      }
-      
-      // 再次调用LLM处理工具结果
-      let finalResponse = response
-      if (toolResults.length > 0) {
-        const toolResultsText = toolResults.map(r => 
-          `Tool ${r.name} (${r.duration}ms): ${r.error || JSON.stringify(r.result)}`
-        ).join('\n')
-        
-        const followUpPrompt = `
-Tool execution results:
-${toolResultsText}
-
-Please summarize the results and provide a final response to the user's original query.
-        `
-        
-        // 显示正在生成最终响应
-        console.log('🧠 Generating final response...')
-        
-        finalResponse = await this.callLLM(systemPrompt, followUpPrompt, [])
-      }
-      
-      return {
-        content: finalResponse,
-        usage: {
-          totalTokens: 1000, // 模拟值
-          toolUses: toolResults.length,
-          durationMs: Date.now() - this.startTime
-        }
-      }
-    } catch (error) {
-      console.error('LLM execution error:', error)
-      // 出错时返回模拟结果
-      return this.generateMockResponse()
-    }
+Guidelines:
+- Use tools when necessary to complete the task
+- Make multiple tool calls in parallel when possible
+- After using tools, synthesize the results into a final answer
+- If you're unsure, ask for clarification instead of guessing
+- Always verify tool results before relying on them`
   }
 
-  private async callLLM(systemPrompt: string, userPrompt: string, tools: any[]): Promise<string> {
-    // 从环境变量获取OpenAI配置
+  private async callLLM(tools: any[]): Promise<any> {
     const apiKey = String(process.env.OPENAI_API_KEY || "").trim()
     const baseUrl = String(process.env.OPENAI_BASE_URL || "").trim()
-    
-    // 定义LLM API返回数据的类型
-    interface ToolCall {
-      id: string
-      type: string
-      function: {
-        name: string
-        arguments: string
-      }
-    }
-    
-    interface Message {
-      role: string
-      content: string | null
-      tool_calls?: ToolCall[]
-    }
-    
-    interface Choice {
-      message: Message
-    }
-    
-    interface LLMResponse {
-      choices: Choice[]
-    }
     
     try {
       const response = await fetch(`${baseUrl}/chat/completions`, {
@@ -263,12 +237,10 @@ Please summarize the results and provide a final response to the user's original
           'Content-Type': 'application/json',
           'Authorization': `Bearer ${apiKey}`,
         },
+        signal: this.abortController.signal,
         body: JSON.stringify({
           model: process.env.OPENAI_MODEL || 'gpt-3.5-turbo',
-          messages: [
-            { role: 'system', content: systemPrompt },
-            { role: 'user', content: userPrompt }
-          ],
+          messages: this.messages,
           tools: tools.length > 0 ? tools.map(tool => ({
             type: 'function',
             function: tool
@@ -282,22 +254,71 @@ Please summarize the results and provide a final response to the user's original
         throw new Error(`API error: ${response.status} ${await response.text()}`)
       }
       
-      const data = await response.json() as LLMResponse
-      return data.choices[0]?.message?.content || data.choices[0]?.message?.tool_calls?.map((tc) => 
-        `\`\`\`tool:${tc.function.name}\n${tc.function.arguments}\n\`\`\``
-      ).join('\n') || ''
+      const data = await response.json() as any
+      return data.choices[0]?.message || { role: 'assistant', content: '' }
     } catch (error) {
-      console.error('LLM API call error:', error)
-      // 出错时返回模拟的工具调用
-      if (this.definition.requiredTools?.includes('web_search')) {
-        return `\`\`\`tool:web_search\n{"query": "${this.prompt}"}\n\`\`\``
+      if (this.abortController.signal.aborted) {
+        throw new Error('Agent execution was aborted')
       }
-      return `I need to use tools to complete this task.`
+      throw error
     }
   }
 
-  private parseToolCalls(content: string): Array<{ id: string; name: string; arguments: any }> {
-    const toolCalls = []
+  private async executeToolCalls(
+    toolCalls: any[], 
+    toolExecutor: any
+  ): Promise<Array<{ id: string; name: string; result: any; error?: string }>> {
+    const results: Array<{ id: string; name: string; result: any; error?: string }> = []
+    
+    for (const toolCall of toolCalls) {
+      const callId = toolCall.id || `tool_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`
+      const name = toolCall.function?.name || toolCall.name
+      const args = toolCall.function?.arguments 
+        ? JSON.parse(toolCall.function.arguments) 
+        : toolCall.arguments
+      
+      this.options.onProgress?.({
+        stage: 'tool_start',
+        message: `Using tool: ${name}`,
+        data: { toolName: name, toolId: callId, arguments: args }
+      })
+      
+      try {
+        const result = await toolExecutor.executeToolCall(
+          { id: callId, name, arguments: args },
+          {
+            sessionId: this.options.sessionId,
+            abortController: this.abortController
+          }
+        )
+        
+        results.push({
+          id: callId,
+          name,
+          result: result.result,
+          error: result.error
+        })
+        
+        this.options.onProgress?.({ 
+          stage: 'tool_complete',
+          message: `Tool completed: ${name}`,
+          data: { toolName: name, toolId: callId, result: result.result }
+        })
+      } catch (error) {
+        results.push({
+          id: callId,
+          name,
+          result: null,
+          error: error instanceof Error ? error.message : String(error)
+        })
+      }
+    }
+    
+    return results
+  }
+
+  private parseToolCalls(content: string): any[] {
+    const toolCalls: any[] = []
     const toolCallRegex = /```tool:(\w+)\n([\s\S]*?)\n```/g
     let match
     
@@ -319,7 +340,6 @@ Please summarize the results and provide a final response to the user's original
   }
 
   private generateMockResponse(): AgentResult {
-    // 模拟LLM调用，在实际实现中这里会调用真正的LLM API
     const toolsUsed = this.definition.requiredTools?.length || 0
     const taskType = this.definition.agentType
     const task = this.prompt

@@ -1,8 +1,9 @@
 import { z } from 'zod'
 import { readFile, stat } from 'fs/promises'
 import { buildTool, type ToolDef } from './Tool.js'
-import path from 'path'
+import { fileOperationsManager } from '../utils/fileOperations.js'
 import * as opendataloaderPdf from '@opendataloader/pdf'
+import { existsSync, unlinkSync } from 'fs'
 
 const inputSchema = z.object({
   path: z.string().describe('Path to the file to read'),
@@ -22,27 +23,6 @@ const outputSchema = z.object({
 export type FileReadInput = z.infer<typeof inputSchema>
 export type FileReadOutput = z.infer<typeof outputSchema>
 
-function isPathSafe(filePath: string): boolean {
-  // Normalize the path
-  const normalizedPath = path.normalize(filePath)
-  
-  // Check for path traversal attempts
-  if (normalizedPath.includes('..')) {
-    return false
-  }
-  
-  // Check for absolute paths outside of current working directory
-  if (path.isAbsolute(normalizedPath)) {
-    const cwd = process.cwd()
-    const resolvedPath = path.resolve(normalizedPath)
-    if (!resolvedPath.startsWith(cwd)) {
-      return false
-    }
-  }
-  
-  return true
-}
-
 function extractLines(content: string, startLine?: number, endLine?: number): string {
   const lines = content.split('\n')
   
@@ -59,7 +39,7 @@ function extractLines(content: string, startLine?: number, endLine?: number): st
 export const FileReadTool = buildTool({
   name: 'file_read',
   searchHint: 'read and display file contents',
-  maxResultSizeChars: 1_000_000, // 1MB limit
+  maxResultSizeChars: 1_000_000,
   
   async description(input) {
     return `Read file: ${input.path}`
@@ -90,15 +70,6 @@ export const FileReadTool = buildTool({
   },
   
   async checkPermissions(input) {
-    const { path: filePath } = input
-    
-    if (!isPathSafe(filePath)) {
-      return {
-        behavior: 'deny',
-        message: `Access denied: Path "${filePath}" is not allowed`,
-      }
-    }
-    
     return {
       behavior: 'allow',
       updatedInput: input,
@@ -137,10 +108,9 @@ export const FileReadTool = buildTool({
     })
     
     try {
-      // Check if file exists and get stats
-      const stats = await stat(filePath)
+      const fileInfo = await fileOperationsManager.getFileInfo(filePath)
       
-      if (!stats.isFile()) {
+      if (!fileInfo.isFile) {
         return {
           data: {
             content: '',
@@ -156,9 +126,7 @@ export const FileReadTool = buildTool({
       let content: string
       let lines: string[]
       
-      // Check if file is PDF
       if (filePath.toLowerCase().endsWith('.pdf')) {
-        // Use opendataloaderPdf to extract text from PDF
         const textFilePath = filePath.replace('.pdf', '.txt')
         
         try {
@@ -166,10 +134,8 @@ export const FileReadTool = buildTool({
             format: 'text'
           })
           
-          // Read the generated text file
           content = await readFile(textFilePath, { encoding: encoding as BufferEncoding })
           
-          // Ensure content is a string before using split
           if (typeof content !== 'string') {
             content = String(content)
           }
@@ -177,33 +143,43 @@ export const FileReadTool = buildTool({
           lines = content.split('\n')
         } catch (pdfError) {
           console.warn('PDF conversion failed:', pdfError)
-          // 转换失败时返回错误信息
           return {
             data: {
               content: '',
               path: filePath,
-              size: stats.size,
+              size: fileInfo.size,
               lines: 0,
               encoding,
             },
             error: `Failed to read PDF file: ${pdfError instanceof Error ? pdfError.message : String(pdfError)}`,
           }
         } finally {
-          // 清理生成的临时文本文件
           try {
-            const fs = await import('fs')
-            if (fs.existsSync(textFilePath)) {
-              fs.unlinkSync(textFilePath)
+            if (existsSync(textFilePath)) {
+              unlinkSync(textFilePath)
             }
           } catch (cleanupError) {
             console.warn('Failed to clean up temporary text file:', cleanupError)
           }
         }
       } else {
-        // Read as regular text file
-        content = await readFile(filePath, { encoding: encoding as BufferEncoding })
+        const readResult = await fileOperationsManager.safeReadFile(filePath, { encoding: encoding as BufferEncoding })
         
-        // Ensure content is a string before using split
+        if (!readResult.success) {
+          return {
+            data: {
+              content: '',
+              path: filePath,
+              size: 0,
+              lines: 0,
+              encoding,
+            },
+            error: readResult.error,
+          }
+        }
+        
+        content = readResult.content!
+        
         if (typeof content !== 'string') {
           content = String(content)
         }
@@ -216,18 +192,17 @@ export const FileReadTool = buildTool({
         data: {
           type: 'read_complete',
           path: filePath,
-          size: stats.size,
+          size: fileInfo.size,
           lines: lines.length,
         },
       })
       
-      // Extract specified lines if requested
       const extractedContent = extractLines(content, start_line, end_line)
       
       const output: FileReadOutput = {
         content: extractedContent,
         path: filePath,
-        size: stats.size,
+        size: fileInfo.size,
         lines: lines.length,
         encoding,
       }

@@ -12,6 +12,7 @@
     "start:terminal": "node dist/index.js --terminal",
     "start:coordinator": "node dist/index.js --terminal --coordinator",
     "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test test/**/*.test.ts",
     "test:agents": "tsx scripts/test-agents.ts",
     "test:system": "node test-system.js",
     "test:tasks": "npm run build && node test-tasks.js",

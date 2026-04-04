@@ -1,36 +1,89 @@
-// Base class for all modules
+// Enhanced production-grade BaseModule with lifecycle management
+import { logger } from '../utils/logger.js';
+import { dom, validation } from '../utils/utils.js';
+
 export class BaseModule {
   constructor(api, config) {
     this.api = api;
     this.config = config;
     this.isActive = false;
     this.element = null;
+    this.moduleName = this.constructor.name;
+    this.logger = logger.createChild(this.moduleName);
+    this.eventListeners = [];
+    this.eventBusSubscriptions = [];
+    this.timeouts = [];
+    this.intervals = [];
   }
 
   async activate() {
+    if (this.isActive) {
+      this.logger.debug('Module already active');
+      return;
+    }
+    
     this.isActive = true;
-    await this.onActivate();
+    this.logger.debug('Activating module');
+    
+    try {
+      await this.onActivate();
+    } catch (error) {
+      this.logger.error('Error during module activation:', error);
+      this.isActive = false;
+      throw error;
+    }
   }
 
   async deactivate() {
+    if (!this.isActive) {
+      this.logger.debug('Module already inactive');
+      return;
+    }
+    
+    this.logger.debug('Deactivating module');
+    
+    try {
+      await this.onDeactivate();
+    } catch (error) {
+      this.logger.error('Error during module deactivation:', error);
+    }
+    
+    this.cleanup();
     this.isActive = false;
-    await this.onDeactivate();
+  }
+
+  cleanup() {
+    this.logger.debug('Cleaning up module resources');
+    
+    this.eventListeners.forEach(({ target, event, handler }) => {
+      if (target && target.removeEventListener) {
+        target.removeEventListener(event, handler);
+      }
+    });
+    this.eventListeners = [];
+    
+    this.eventBusSubscriptions.forEach(unsubscribe => {
+      if (typeof unsubscribe === 'function') {
+        unsubscribe();
+      }
+    });
+    this.eventBusSubscriptions = [];
+    
+    this.timeouts.forEach(timeoutId => clearTimeout(timeoutId));
+    this.timeouts = [];
+    
+    this.intervals.forEach(intervalId => clearInterval(intervalId));
+    this.intervals = [];
   }
 
   async onActivate() {
-    // Override in subclasses
   }
 
   async onDeactivate() {
-    // Override in subclasses
   }
 
-  // Utility methods
-  createElement(tag, className = '', content = '') {
-    const element = document.createElement(tag);
-    if (className) element.className = className;
-    if (content) element.innerHTML = content;
-    return element;
+  createElement(tag, options = {}) {
+    return dom.createElement(tag, options);
   }
 
   showStatus(message, isError = false) {
@@ -56,17 +109,14 @@ export class BaseModule {
     }
   }
 
-  // Event handling
   addEventListener(selector, event, handler) {
     let target;
     
     if (typeof selector === 'string') {
-      // First try to find within the module element
       if (this.element) {
         target = this.element.querySelector(selector);
       }
       
-      // If not found and selector starts with # or ., try global search
       if (!target && (selector.startsWith('#') || selector.startsWith('.'))) {
         target = document.querySelector(selector);
       }
@@ -76,9 +126,10 @@ export class BaseModule {
     
     if (target) {
       target.addEventListener(event, handler);
-      console.debug(`Event listener added: ${selector} -> ${event}`);
+      this.eventListeners.push({ target, event, handler });
+      this.logger.debug(`Event listener added: ${selector} -> ${event}`);
     } else {
-      console.warn(`Element not found for selector: ${selector}`);
+      this.logger.warn(`Element not found for selector: ${selector}`);
     }
   }
 
@@ -86,12 +137,10 @@ export class BaseModule {
     let target;
     
     if (typeof selector === 'string') {
-      // First try to find within the module element
       if (this.element) {
         target = this.element.querySelector(selector);
       }
       
-      // If not found and selector starts with #, try global search
       if (!target && selector.startsWith('#')) {
         target = document.querySelector(selector);
       }
@@ -101,10 +150,40 @@ export class BaseModule {
     
     if (target) {
       target.removeEventListener(event, handler);
+      this.eventListeners = this.eventListeners.filter(
+        l => !(l.target === target && l.event === event && l.handler === handler)
+      );
     }
   }
 
-  // Form helpers
+  safeSetTimeout(callback, delay) {
+    const timeoutId = setTimeout(() => {
+      callback();
+      const index = this.timeouts.indexOf(timeoutId);
+      if (index > -1) {
+        this.timeouts.splice(index, 1);
+      }
+    }, delay);
+    this.timeouts.push(timeoutId);
+    return timeoutId;
+  }
+
+  safeSetInterval(callback, interval) {
+    const intervalId = setInterval(callback, interval);
+    this.intervals.push(intervalId);
+    return intervalId;
+  }
+
+  safeClearTimeout(timeoutId) {
+    clearTimeout(timeoutId);
+    this.timeouts = this.timeouts.filter(id => id !== timeoutId);
+  }
+
+  safeClearInterval(intervalId) {
+    clearInterval(intervalId);
+    this.intervals = this.intervals.filter(id => id !== intervalId);
+  }
+
   getFormData(formSelector) {
     const form = this.element?.querySelector(formSelector);
     if (!form) return {};
@@ -129,7 +208,7 @@ export class BaseModule {
         if (input.type === 'checkbox') {
           input.checked = Boolean(value);
         } else {
-          input.value = value || '';
+          input.value = validation.sanitize(value, 'string');
         }
       }
     });

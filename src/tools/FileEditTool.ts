@@ -1,7 +1,6 @@
 import { z } from 'zod'
-import { readFile, writeFile, stat } from 'fs/promises'
 import { buildTool, type ToolDef } from './Tool.js'
-import path from 'path'
+import { fileOperationsManager } from '../utils/fileOperations.js'
 
 const inputSchema = z.object({
   path: z.string().describe('Path to the file to edit'),
@@ -16,75 +15,51 @@ const outputSchema = z.object({
   old_size: z.number().describe('Original file size in bytes'),
   new_size: z.number().describe('New file size in bytes'),
   encoding: z.string().describe('File encoding used'),
+  backup_path: z.string().optional().describe('Path to the backup file if created'),
 })
 
 export type FileEditInput = z.infer<typeof inputSchema>
 export type FileEditOutput = z.infer<typeof outputSchema>
 
-function isPathSafe(filePath: string): boolean {
-  const normalizedPath = path.normalize(filePath)
-  
-  if (normalizedPath.includes('..')) {
-    return false
-  }
-  
-  if (path.isAbsolute(normalizedPath)) {
-    const cwd = process.cwd()
-    const resolvedPath = path.resolve(normalizedPath)
-    if (!resolvedPath.startsWith(cwd)) {
-      return false
-    }
-  }
-  
-  return true
-}
-
 export const FileEditTool = buildTool({
   name: 'file_edit',
   searchHint: 'edit files by replacing text',
   maxResultSizeChars: 10_000,
-  
+
   async description(input) {
     return `Edit file: ${input.path}`
   },
-  
+
   inputSchema,
   outputSchema,
-  
+
   isConcurrencySafe() {
-    return false // File editing is not safe for concurrent execution
+    return false
   },
-  
+
   isReadOnly() {
     return false
   },
-  
+
   isDestructive() {
-    return true // Editing files is destructive
+    return true
   },
-  
+
   userFacingName() {
     return 'File Edit'
   },
-  
+
   getToolUseSummary(input) {
     return input?.path || null
   },
-  
+
   getActivityDescription(input) {
     const summary = this.getToolUseSummary?.(input)
     return summary ? `Editing ${summary}` : 'Editing file'
   },
-  
+
   async checkPermissions(input) {
     const { path: filePath } = input
-    
-    if (!isPathSafe(filePath)) {
-      return {
-        behavior: 'deny',
-        message: `Access denied: Path "${filePath}" is not allowed`,
-      }
-    }
     
     return {
       behavior: 'ask',
@@ -101,7 +76,7 @@ export const FileEditTool = buildTool({
       ],
     }
   },
-  
+
   async validateInput(input) {
     const { path: filePath, old_str, new_str } = input
     
@@ -131,7 +106,7 @@ export const FileEditTool = buildTool({
     
     return { result: true }
   },
-  
+
   async call({ path: filePath, old_str, new_str, encoding }, context, onProgress) {
     onProgress?.({
       toolUseID: 'file-edit',
@@ -140,11 +115,11 @@ export const FileEditTool = buildTool({
         path: filePath,
       },
     })
-    
+
     try {
-      // Check if file exists
-      const stats = await stat(filePath)
-      if (!stats.isFile()) {
+      const fileInfo = await fileOperationsManager.getFileInfo(filePath)
+      
+      if (!fileInfo.isFile) {
         return {
           data: {
             path: filePath,
@@ -156,14 +131,27 @@ export const FileEditTool = buildTool({
           error: `Path "${filePath}" is not a file`,
         }
       }
+
+      const readResult = await fileOperationsManager.safeReadFile(filePath, { encoding: encoding as BufferEncoding })
       
-      // Read file content
-      const originalContent = await readFile(filePath, { encoding: encoding as BufferEncoding })
+      if (!readResult.success) {
+        return {
+          data: {
+            path: filePath,
+            changes_made: 0,
+            old_size: 0,
+            new_size: 0,
+            encoding,
+          },
+          error: readResult.error,
+        }
+      }
+
+      const originalContent = readResult.content!
       const oldSize = Buffer.byteLength(originalContent, encoding as BufferEncoding)
-      
-      // Count occurrences of old_str
+
       const occurrences = (originalContent.match(new RegExp(old_str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g')) || []).length
-      
+
       if (occurrences === 0) {
         return {
           data: {
@@ -176,14 +164,25 @@ export const FileEditTool = buildTool({
           error: `String "${old_str}" not found in file`,
         }
       }
-      
-      // Replace all occurrences
+
       const newContent = originalContent.replace(new RegExp(old_str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'g'), new_str)
       const newSize = Buffer.byteLength(newContent, encoding as BufferEncoding)
-      
-      // Write back to file
-      await writeFile(filePath, newContent, { encoding: encoding as BufferEncoding })
-      
+
+      const writeResult = await fileOperationsManager.safeWriteFile(filePath, newContent, { encoding: encoding as BufferEncoding })
+
+      if (!writeResult.success) {
+        return {
+          data: {
+            path: filePath,
+            changes_made: 0,
+            old_size: oldSize,
+            new_size: oldSize,
+            encoding,
+          },
+          error: writeResult.error,
+        }
+      }
+
       onProgress?.({
         toolUseID: 'file-edit',
         data: {
@@ -192,21 +191,23 @@ export const FileEditTool = buildTool({
           changes_made: occurrences,
           old_size: oldSize,
           new_size: newSize,
+          backup_path: writeResult.backupPath,
         },
       })
-      
+
       const output: FileEditOutput = {
         path: filePath,
         changes_made: occurrences,
         old_size: oldSize,
         new_size: newSize,
         encoding,
+        backup_path: writeResult.backupPath,
       }
-      
+
       return { data: output }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error)
-      
+
       const output: FileEditOutput = {
         path: filePath,
         changes_made: 0,
@@ -214,7 +215,7 @@ export const FileEditTool = buildTool({
         new_size: 0,
         encoding,
       }
-      
+
       return { data: output, error: message }
     }
   },

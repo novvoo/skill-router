@@ -114,6 +114,16 @@ export type Tool<
   readonly alwaysLoad?: boolean
   
   /**
+   * Category for tool organization
+   */
+  readonly category?: 'file' | 'search' | 'system' | 'network' | 'agent' | 'planning' | 'interaction'
+  
+  /**
+   * Tags for better tool discovery
+   */
+  readonly tags?: string[]
+  
+  /**
    * Main tool execution function
    */
   call(
@@ -191,6 +201,10 @@ type DefaultableToolKeys =
   | 'isDestructive'
   | 'checkPermissions'
   | 'userFacingName'
+  | 'shouldDefer'
+  | 'alwaysLoad'
+  | 'category'
+  | 'tags'
 
 /**
  * Tool definition accepted by `buildTool`
@@ -227,6 +241,10 @@ const TOOL_DEFAULTS = {
   ): Promise<PermissionResult> =>
     Promise.resolve({ behavior: 'allow', updatedInput: input }),
   userFacingName: (_input?: unknown) => '',
+  shouldDefer: false,
+  alwaysLoad: false,
+  category: undefined,
+  tags: [],
 }
 
 type ToolDefaults = typeof TOOL_DEFAULTS

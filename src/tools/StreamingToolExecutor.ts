@@ -17,7 +17,7 @@ type ToolExecutionState = {
 }
 
 export class StreamingToolExecutor extends ToolExecutor {
-  private executionQueue: Map<string, ToolExecutionState> = new Map()
+  private streamingExecutionQueue: Map<string, ToolExecutionState> = new Map()
   private onProgress?: (progress: StreamingToolExecutionProgress) => void
   private abortController?: AbortController
   
@@ -41,7 +41,7 @@ export class StreamingToolExecutor extends ToolExecutor {
     
     // Add all tools to queue with 'queued' status
     for (const toolCall of toolCalls) {
-      this.executionQueue.set(toolCall.id, {
+      this.streamingExecutionQueue.set(toolCall.id, {
         toolCall,
         status: 'queued'
       })
@@ -60,7 +60,7 @@ export class StreamingToolExecutor extends ToolExecutor {
     
     // Wait for all tools to complete
     const results: ToolCallResult[] = []
-    for (const [toolId, state] of this.executionQueue) {
+    for (const [toolId, state] of this.streamingExecutionQueue) {
       if (state.promise) {
         const result = await state.promise
         results.push(result)
@@ -88,10 +88,10 @@ export class StreamingToolExecutor extends ToolExecutor {
     sessionId?: string
     abortController: AbortController
   }) {
-    const executingStates = Array.from(this.executionQueue.values())
+    const executingStates = Array.from(this.streamingExecutionQueue.values())
       .filter(state => state.status === 'executing')
     
-    const queuedStates = Array.from(this.executionQueue.values())
+    const queuedStates = Array.from(this.streamingExecutionQueue.values())
       .filter(state => state.status === 'queued')
     
     for (const state of queuedStates) {
@@ -211,7 +211,7 @@ export class StreamingToolExecutor extends ToolExecutor {
       }
       
       // Update state
-      const state = this.executionQueue.get(id)
+      const state = this.streamingExecutionQueue.get(id)
       if (state) {
         state.status = 'completed'
         state.result = toolResult
@@ -243,7 +243,7 @@ export class StreamingToolExecutor extends ToolExecutor {
       }
       
       // Update state
-      const state = this.executionQueue.get(id)
+      const state = this.streamingExecutionQueue.get(id)
       if (state) {
         state.status = 'error'
         state.result = toolResult
@@ -272,36 +272,11 @@ export class StreamingToolExecutor extends ToolExecutor {
   }
   
   /**
-   * Get tool by name
-   */
-  getTool(name: string): Tool | undefined {
-    return super.getTool(name)
-  }
-  
-  /**
-   * Get available tools
-   */
-  getAvailableTools(): Tool[] {
-    return super.getAvailableTools()
-  }
-  
-  /**
-   * Get tool schemas for LLM function calling
-   */
-  getToolSchemas(): Array<{
-    name: string
-    description: string
-    parameters: any
-  }> {
-    return super.getToolSchemas()
-  }
-  
-  /**
    * Get current execution status
    */
   getExecutionStatus(): Map<string, ToolExecutionStatus> {
     const status = new Map<string, ToolExecutionStatus>()
-    for (const [toolId, state] of this.executionQueue) {
+    for (const [toolId, state] of this.streamingExecutionQueue) {
       status.set(toolId, state.status)
     }
     return status
@@ -311,9 +286,9 @@ export class StreamingToolExecutor extends ToolExecutor {
    * Clear completed executions from queue
    */
   clearCompleted() {
-    for (const [toolId, state] of this.executionQueue) {
+    for (const [toolId, state] of this.streamingExecutionQueue) {
       if (state.status === 'yielded' || state.status === 'error') {
-        this.executionQueue.delete(toolId)
+        this.streamingExecutionQueue.delete(toolId)
       }
     }
   }

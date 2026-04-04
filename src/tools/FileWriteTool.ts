@@ -1,7 +1,8 @@
 import { z } from 'zod'
-import { writeFile, mkdir, stat } from 'fs/promises'
+import { stat } from 'fs/promises'
 import { buildTool, type ToolDef } from './Tool.js'
-import path from 'path'
+import { fileOperationsManager } from '../utils/fileOperations.js'
+import { existsSync } from 'fs'
 
 const inputSchema = z.object({
   path: z.string().describe('Path to the file to write'),
@@ -16,31 +17,11 @@ const outputSchema = z.object({
   lines: z.number().describe('Number of lines written'),
   encoding: z.string().describe('File encoding used'),
   created: z.boolean().describe('Whether the file was created (true) or overwritten (false)'),
+  backup_path: z.string().optional().describe('Path to the backup file if created'),
 })
 
 export type FileWriteInput = z.infer<typeof inputSchema>
 export type FileWriteOutput = z.infer<typeof outputSchema>
-
-function isPathSafe(filePath: string): boolean {
-  // Normalize the path
-  const normalizedPath = path.normalize(filePath)
-  
-  // Check for path traversal attempts
-  if (normalizedPath.includes('..')) {
-    return false
-  }
-  
-  // Check for absolute paths outside of current working directory
-  if (path.isAbsolute(normalizedPath)) {
-    const cwd = process.cwd()
-    const resolvedPath = path.resolve(normalizedPath)
-    if (!resolvedPath.startsWith(cwd)) {
-      return false
-    }
-  }
-  
-  return true
-}
 
 export const FileWriteTool = buildTool({
   name: 'file_write',
@@ -55,7 +36,7 @@ export const FileWriteTool = buildTool({
   outputSchema,
   
   isConcurrencySafe() {
-    return false // File writing is not safe for concurrent execution
+    return false
   },
   
   isReadOnly() {
@@ -63,7 +44,7 @@ export const FileWriteTool = buildTool({
   },
   
   isDestructive() {
-    return true // Writing files is destructive
+    return true
   },
   
   userFacingName() {
@@ -81,13 +62,6 @@ export const FileWriteTool = buildTool({
   
   async checkPermissions(input) {
     const { path: filePath } = input
-    
-    if (!isPathSafe(filePath)) {
-      return {
-        behavior: 'deny',
-        message: `Access denied: Path "${filePath}" is not allowed`,
-      }
-    }
     
     return {
       behavior: 'ask',
@@ -116,7 +90,7 @@ export const FileWriteTool = buildTool({
       }
     }
     
-    if (content.length > 10_000_000) { // 10MB limit
+    if (content.length > 10_000_000) {
       return {
         result: false,
         message: 'Content too large (max 10MB)',
@@ -127,7 +101,7 @@ export const FileWriteTool = buildTool({
     return { result: true }
   },
   
-  async call({ path: filePath, content, encoding, create_dirs }, context, onProgress) {
+  async call({ path: filePath, content, encoding }, context, onProgress) {
     onProgress?.({
       toolUseID: 'file-write',
       data: {
@@ -138,23 +112,22 @@ export const FileWriteTool = buildTool({
     })
     
     try {
-      // Check if file already exists
-      let fileExists = false
-      try {
-        await stat(filePath)
-        fileExists = true
-      } catch {
-        // File doesn't exist
-      }
+      let fileExists = existsSync(filePath)
       
-      // Create parent directories if requested
-      if (create_dirs) {
-        const dir = path.dirname(filePath)
-        await mkdir(dir, { recursive: true })
-      }
+      const result = await fileOperationsManager.safeWriteFile(filePath, content, { encoding: encoding as BufferEncoding })
       
-      // Write file content
-      await writeFile(filePath, content, { encoding: encoding as BufferEncoding })
+      if (!result.success) {
+        return {
+          data: {
+            path: filePath,
+            size: 0,
+            lines: 0,
+            encoding,
+            created: false,
+          },
+          error: result.error,
+        }
+      }
       
       const lines = content.split('\n').length
       const size = Buffer.byteLength(content, encoding as BufferEncoding)
@@ -166,6 +139,7 @@ export const FileWriteTool = buildTool({
           path: filePath,
           size,
           lines,
+          backup_path: result.backupPath,
         },
       })
       
@@ -175,6 +149,7 @@ export const FileWriteTool = buildTool({
         lines,
         encoding,
         created: !fileExists,
+        backup_path: result.backupPath,
       }
       
       return { data: output }

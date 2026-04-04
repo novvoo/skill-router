@@ -9,8 +9,12 @@ export interface SlashCommand {
 
 export class CommandProcessor {
   private agentManager: AgentManager
-  private toolExecutor: ToolExecutor | null = null
+  protected toolExecutor: ToolExecutor | null = null
   private availableCommands: Map<string, SlashCommand> = new Map()
+
+  getToolExecutor(): ToolExecutor | null {
+    return this.toolExecutor
+  }
 
   constructor() {
     this.agentManager = AgentManager.getInstance()
@@ -61,6 +65,12 @@ export class CommandProcessor {
       ['/clear', new ClearCommand()],
       ['/shell', new ShellCommand()],
       ['/notifications', new NotificationsCommand()],
+      ['/todo', new TodoCommand()],
+      ['/todos', new TodoListCommand()],
+      ['/plan', new PlanCommand()],
+      ['/metrics', new MetricsCommand(this)],
+      ['/audit', new AuditCommand(this)],
+      ['/cache', new CacheCommand(this)],
     ])
   }
 
@@ -264,6 +274,12 @@ class HelpCommand implements SlashCommand {
     console.log('/tools                        - List available tools')
     console.log('/status                       - Show system status')
     console.log('/clear                        - Clear screen')
+    console.log('/todo <action> [params]        - Manage todo items (add, status, delete, clear)')
+    console.log('/todos                        - List all todo items')
+    console.log('/plan <task>                  - Create a plan with todo steps')
+    console.log('/metrics [show|clear]          - Show tool execution metrics')
+    console.log('/audit [show|clear] [limit]   - Show audit logs')
+    console.log('/cache [show|clear]           - Manage tool result cache')
     console.log('/exit                         - Exit terminal')
     console.log('')
     console.log('💡 You can also type natural language requests directly')
@@ -271,6 +287,10 @@ class HelpCommand implements SlashCommand {
     console.log('   "spawn researcher agent to analyze market trends"')
     console.log('   "what is the weather today?"')
     console.log('   "create a python script to sort files"')
+    console.log('   /todo add "Implement feature X" high')
+    console.log('   /plan "Build a web application"')
+    console.log('   /metrics - Show tool execution statistics')
+    console.log('   /audit 10 - Show last 10 audit logs')
     console.log('─'.repeat(60))
     console.log('')
   }
@@ -617,6 +637,338 @@ class ClearCommand implements SlashCommand {
     console.clear()
     console.log('🤖 Skill-Router Agent Terminal')
     console.log('===============================')
+    console.log('')
+  }
+}
+
+class TodoCommand implements SlashCommand {
+  private todoStore: any = null
+
+  async execute(args: string[]): Promise<void> {
+    if (args.length === 0) {
+      console.log('❌ Usage: /todo <action> [parameters]')
+      console.log('   Actions: add, update, status, delete, clear')
+      console.log('   Examples:')
+      console.log('     /todo add "Implement feature X" high')
+      console.log('     /todo status <id> completed')
+      console.log('     /todo delete <id>')
+      console.log('     /todo clear')
+      return
+    }
+
+    if (!this.todoStore) {
+      const { TodoWriteTool } = await import('../tools/TodoWriteTool.js')
+      this.todoStore = (TodoWriteTool as any).todoStore
+    }
+
+    const action = args[0]
+    const todoStore = this.todoStore
+
+    try {
+      switch (action) {
+        case 'add':
+          if (args.length < 2) {
+            console.log('❌ Usage: /todo add "<content>" [priority]')
+            return
+          }
+          const content = args[1]
+          const priority = (args[2] as 'low' | 'medium' | 'high') || 'medium'
+          const newTodo = todoStore.addTodo(undefined, content, priority)
+          console.log(`✅ Added todo: ${content} (ID: ${newTodo.id})`)
+          break
+
+        case 'status':
+          if (args.length < 3) {
+            console.log('❌ Usage: /todo status <id> <status>')
+            console.log('   Status: pending, in_progress, completed')
+            return
+          }
+          const statusId = args[1]
+          const status = args[2] as 'pending' | 'in_progress' | 'completed'
+          const updated = todoStore.updateTodoStatus(undefined, statusId, status)
+          if (updated) {
+            console.log(`✅ Updated todo ${statusId} status to ${status}`)
+          } else {
+            console.log(`❌ Todo ${statusId} not found`)
+          }
+          break
+
+        case 'delete':
+          if (args.length < 2) {
+            console.log('❌ Usage: /todo delete <id>')
+            return
+          }
+          const deleteId = args[1]
+          const deleted = todoStore.deleteTodo(undefined, deleteId)
+          if (deleted) {
+            console.log(`✅ Deleted todo ${deleteId}`)
+          } else {
+            console.log(`❌ Todo ${deleteId} not found`)
+          }
+          break
+
+        case 'clear':
+          todoStore.clearTodos(undefined)
+          console.log('✅ Cleared all todos')
+          break
+
+        default:
+          console.log(`❌ Unknown action: ${action}`)
+      }
+    } catch (error) {
+      console.error('❌ Error:', error)
+    }
+  }
+}
+
+class TodoListCommand implements SlashCommand {
+  private todoStore: any = null
+
+  async execute(): Promise<void> {
+    if (!this.todoStore) {
+      const { TodoWriteTool } = await import('../tools/TodoWriteTool.js')
+      this.todoStore = (TodoWriteTool as any).todoStore
+    }
+
+    const todos = this.todoStore.getTodos(undefined)
+
+    console.log('\n📋 Todo List:')
+    console.log('─'.repeat(80))
+
+    if (todos.length === 0) {
+      console.log('No todos found. Use /todo add to create one.')
+    } else {
+      const statusIcons = {
+        pending: '⏳',
+        in_progress: '🔄',
+        completed: '✅',
+      }
+      const priorityIcons = {
+        low: '🟢',
+        medium: '🟡',
+        high: '🔴',
+      }
+
+      todos.forEach((todo: any) => {
+        const icon = statusIcons[todo.status as keyof typeof statusIcons]
+        const priorityIcon = priorityIcons[todo.priority as keyof typeof priorityIcons]
+        console.log(`${icon}${priorityIcon} [${todo.id}] ${todo.content}`)
+      })
+
+      console.log('\n📊 Stats:')
+      const pending = todos.filter((t: any) => t.status === 'pending').length
+      const inProgress = todos.filter((t: any) => t.status === 'in_progress').length
+      const completed = todos.filter((t: any) => t.status === 'completed').length
+      console.log(`   Pending: ${pending} | In Progress: ${inProgress} | Completed: ${completed}`)
+    }
+
+    console.log('─'.repeat(80))
+    console.log('')
+  }
+}
+
+class PlanCommand implements SlashCommand {
+  async execute(args: string[]): Promise<void> {
+    if (args.length === 0) {
+      console.log('❌ Usage: /plan <complex_task_description>')
+      console.log('   This will create a plan using todo items')
+      return
+    }
+
+    const task = args.join(' ')
+    console.log(`🎯 Creating plan for: ${task}`)
+    console.log('')
+
+    try {
+      const { TodoWriteTool } = await import('../tools/TodoWriteTool.js')
+      const todoStore = (TodoWriteTool as any).todoStore
+
+      const steps = [
+        `1. Analyze and understand the task: ${task}`,
+        '2. Break down into smaller subtasks',
+        '3. Implement the solution',
+        '4. Test and verify',
+        '5. Document the results',
+      ]
+
+      console.log('📋 Plan steps:')
+      steps.forEach((step, index) => {
+        const todo = todoStore.addTodo(undefined, step, index === 0 ? 'high' : 'medium')
+        console.log(`   ${index + 1}. ${step} (ID: ${todo.id})`)
+      })
+
+      console.log('')
+      console.log('✅ Plan created! Use /todos to view, /todo status <id> in_progress to start working')
+      console.log('')
+    } catch (error) {
+      console.error('❌ Error creating plan:', error)
+    }
+  }
+}
+
+class MetricsCommand implements SlashCommand {
+  constructor(private commandProcessor: CommandProcessor) {}
+
+  async execute(args: string[]): Promise<void> {
+    const executor = this.commandProcessor.getToolExecutor()
+    if (!executor) {
+      console.log('❌ ToolExecutor not initialized')
+      return
+    }
+
+    const action = args[0] || 'show'
+
+    switch (action) {
+      case 'show':
+      case 'list':
+        this.showMetrics(executor)
+        break
+      case 'clear':
+      case 'reset':
+        executor.clearMetrics()
+        console.log('✅ Metrics cleared')
+        break
+      default:
+        console.log('❌ Usage: /metrics [show|clear]')
+    }
+  }
+
+  private showMetrics(executor: any): void {
+    const { global, byTool } = executor.getMetrics()
+
+    console.log('\n📊 Tool Execution Metrics:')
+    console.log('─'.repeat(80))
+
+    console.log('\n📈 Global Metrics:')
+    console.log(`   Total Calls: ${global.totalCalls}`)
+    console.log(`   Successful: ${global.successfulCalls} (${global.totalCalls > 0 ? Math.round(global.successfulCalls / global.totalCalls * 100) : 0}%)`)
+    console.log(`   Failed: ${global.failedCalls}`)
+    console.log(`   Average Duration: ${Math.round(global.avgDurationMs)}ms`)
+    console.log(`   Total Duration: ${Math.round(global.totalDurationMs / 1000)}s`)
+    console.log(`   Retries: ${global.retries}`)
+    console.log(`   Cache Hits: ${global.cacheHits}`)
+    console.log(`   Cache Misses: ${global.cacheMisses}`)
+    console.log(`   Hit Rate: ${global.cacheHits + global.cacheMisses > 0 ? Math.round(global.cacheHits / (global.cacheHits + global.cacheMisses) * 100) : 0}%`)
+
+    if (byTool.size > 0) {
+      console.log('\n🔧 Per-Tool Metrics:')
+      for (const [toolName, metrics] of byTool) {
+        console.log(`\n   📌 ${toolName}:`)
+        console.log(`      Calls: ${metrics.totalCalls} | Success: ${metrics.successfulCalls} | Failed: ${metrics.failedCalls}`)
+        console.log(`      Avg: ${Math.round(metrics.avgDurationMs)}ms | Total: ${Math.round(metrics.totalDurationMs / 1000)}s`)
+        if (metrics.cacheHits > 0 || metrics.cacheMisses > 0) {
+          console.log(`      Cache: ${metrics.cacheHits} hits / ${metrics.cacheMisses} misses`)
+        }
+      }
+    }
+
+    console.log('\n─'.repeat(80))
+    console.log('')
+  }
+}
+
+class AuditCommand implements SlashCommand {
+  constructor(private commandProcessor: CommandProcessor) {}
+
+  async execute(args: string[]): Promise<void> {
+    const executor = this.commandProcessor.getToolExecutor()
+    if (!executor) {
+      console.log('❌ ToolExecutor not initialized')
+      return
+    }
+
+    const action = args[0] || 'show'
+    const limit = args[1] ? parseInt(args[1]) : 10
+
+    switch (action) {
+      case 'show':
+      case 'list':
+        this.showAuditLogs(executor, limit)
+        break
+      case 'clear':
+        executor.clearAuditLogs()
+        console.log('✅ Audit logs cleared')
+        break
+      default:
+        console.log('❌ Usage: /audit [show|clear] [limit]')
+    }
+  }
+
+  private showAuditLogs(executor: any, limit: number): void {
+    const logs = executor.getAuditLogs(limit)
+
+    console.log('\n📜 Audit Logs:')
+    console.log('─'.repeat(80))
+
+    if (logs.length === 0) {
+      console.log('No audit logs found')
+    } else {
+      const statusIcons = {
+        success: '✅',
+        error: '❌',
+        cached: '💾',
+      }
+
+      logs.forEach((log: any) => {
+        const icon = statusIcons[log.status as keyof typeof statusIcons] || '❓'
+        const time = new Date(log.timestamp).toLocaleTimeString()
+        console.log(`${icon} [${time}] ${log.toolName}`)
+        console.log(`   ID: ${log.toolCallId} | Duration: ${log.durationMs}ms`)
+        if (log.retryCount > 0) {
+          console.log(`   Retries: ${log.retryCount}`)
+        }
+        if (log.error) {
+          console.log(`   Error: ${log.error}`)
+        }
+        console.log('')
+      })
+    }
+
+    console.log('─'.repeat(80))
+    console.log('')
+  }
+}
+
+class CacheCommand implements SlashCommand {
+  constructor(private commandProcessor: CommandProcessor) {}
+
+  async execute(args: string[]): Promise<void> {
+    const executor = this.commandProcessor.getToolExecutor()
+    if (!executor) {
+      console.log('❌ ToolExecutor not initialized')
+      return
+    }
+
+    const action = args[0] || 'show'
+
+    switch (action) {
+      case 'show':
+      case 'status':
+        this.showCacheStatus(executor)
+        break
+      case 'clear':
+        executor.clearCache()
+        console.log('✅ Cache cleared')
+        break
+      default:
+        console.log('❌ Usage: /cache [show|clear]')
+    }
+  }
+
+  private showCacheStatus(executor: any): void {
+    const metrics = executor.getMetrics()
+    const cacheSize = (executor as any).cache?.size() || 0
+
+    console.log('\n💾 Cache Status:')
+    console.log('─'.repeat(80))
+    console.log(`   Entries: ${cacheSize}`)
+    console.log(`   Hits: ${metrics.global.cacheHits}`)
+    console.log(`   Misses: ${metrics.global.cacheMisses}`)
+    const hitRate = metrics.global.cacheHits + metrics.global.cacheMisses > 0
+      ? Math.round(metrics.global.cacheHits / (metrics.global.cacheHits + metrics.global.cacheMisses) * 100)
+      : 0
+    console.log(`   Hit Rate: ${hitRate}%`)
+    console.log('─'.repeat(80))
     console.log('')
   }
 }

@@ -10,21 +10,46 @@ import { MemoryModule } from './modules/MemoryModule.js';
 import { SettingsModule } from './modules/SettingsModule.js';
 import { TerminalModule } from './modules/TerminalModule.js';
 import { FilesModule } from './modules/FilesModule.js';
-import { notifications } from './utils/notifications.js';
+import { DeepSearchModule } from './modules/DeepSearchModule.js';
+import { logger, LOG_LEVELS } from './utils/logger.js';
+import { initErrorHandler, getErrorHandler } from './utils/errorHandler.js';
+import { initEventBus, getEventBus } from './utils/eventBus.js';
+import { dom } from './utils/utils.js';
 
 class App {
   constructor() {
+    logger.setLevel(LOG_LEVELS.DEBUG);
+    logger.info('Initializing Skill-Router App...');
+    
     this.config = new ConfigManager();
     this.api = new ApiClient(this.config);
     this.router = new Router();
     this.modules = new Map();
-    this.notifications = notifications;
+    this.currentModule = null;
+    this.errorHandler = initErrorHandler();
+    this.eventBus = initEventBus({ debug: true });
     
     this.init();
   }
 
   async init() {
-    // Initialize modules
+    try {
+      await this.initModules();
+      this.setupRoutes();
+      this.setupRouterGuards();
+      await this.router.init();
+      this.setupGlobalEvents();
+      
+      logger.info('🚀 Skill-Router Web App initialized successfully');
+    } catch (error) {
+      logger.error('Failed to initialize app:', error);
+      this.errorHandler.handleError(error, { source: 'app.init' });
+    }
+  }
+
+  async initModules() {
+    logger.debug('Initializing modules...');
+    
     this.modules.set('chat', new ChatModule(this.api, this.config));
     this.modules.set('agents', new AgentModule(this.api, this.config));
     this.modules.set('tools', new ToolModule(this.api, this.config));
@@ -33,33 +58,58 @@ class App {
     this.modules.set('settings', new SettingsModule(this.api, this.config));
     this.modules.set('files', new FilesModule(this.api, this.config));
     this.modules.set('terminal', new TerminalModule(this.api, this.config));
-
-    // Setup routes
-    this.setupRoutes();
+    this.modules.set('deepsearch', new DeepSearchModule(this.api, this.config));
     
-    // Initialize router
-    await this.router.init();
-    
-    // Setup global event listeners
-    this.setupGlobalEvents();
-    
-    console.log('🚀 Skill-Router Web App initialized');
+    logger.debug(`Initialized ${this.modules.size} modules`);
   }
 
   setupRoutes() {
-    this.router.addRoute('/', () => this.showModule('chat'));
-    this.router.addRoute('/chat', () => this.showModule('chat'));
-    this.router.addRoute('/agents', () => this.showModule('agents'));
-    this.router.addRoute('/tools', () => this.showModule('tools'));
-    this.router.addRoute('/tasks', () => this.showModule('tasks'));
-    this.router.addRoute('/memory', () => this.showModule('memory'));
-    this.router.addRoute('/settings', () => this.showModule('settings'));
-    this.router.addRoute('/files', () => this.showModule('files'));
-    this.router.addRoute('/terminal', () => this.showModule('terminal'));
+    logger.debug('Setting up routes...');
+    
+    this.router.addRoute('/', () => this.showModule('chat'), { name: 'home' });
+    this.router.addRoute('/chat', () => this.showModule('chat'), { name: 'chat' });
+    this.router.addRoute('/agents', () => this.showModule('agents'), { name: 'agents' });
+    this.router.addRoute('/tools', () => this.showModule('tools'), { name: 'tools' });
+    this.router.addRoute('/tasks', () => this.showModule('tasks'), { name: 'tasks' });
+    this.router.addRoute('/memory', () => this.showModule('memory'), { name: 'memory' });
+    this.router.addRoute('/settings', () => this.showModule('settings'), { name: 'settings' });
+    this.router.addRoute('/files', () => this.showModule('files'), { name: 'files' });
+    this.router.addRoute('/terminal', () => this.showModule('terminal'), { name: 'terminal' });
+    this.router.addRoute('/deepsearch', () => this.showModule('deepsearch'), { name: 'deepsearch' });
+    
+    this.router.setNotFoundHandler((path) => {
+      logger.warn(`Route not found: ${path}, redirecting to home`);
+      this.router.navigate('/');
+    });
+  }
+
+  setupRouterGuards() {
+    this.router.beforeEach((to, from) => {
+      logger.debug(`Navigation: ${from?.path || 'init'} -> ${to.path}`);
+      this.eventBus.emit('navigation:before', { to, from });
+      return true;
+    });
+
+    this.router.afterEach((to, from) => {
+      this.eventBus.emit('navigation:after', { to, from });
+    });
   }
 
   async showModule(moduleName) {
-    // Hide all modules
+    logger.debug(`Showing module: ${moduleName}`);
+    
+    if (this.currentModule && this.currentModule !== moduleName) {
+      const previousModule = this.modules.get(this.currentModule);
+      if (previousModule && previousModule.deactivate) {
+        try {
+          await previousModule.deactivate();
+          logger.debug(`Deactivated module: ${this.currentModule}`);
+        } catch (error) {
+          logger.error(`Error deactivating module ${this.currentModule}:`, error);
+        }
+      }
+    }
+
     this.modules.forEach((module, name) => {
       const element = document.getElementById(`${name}-page`);
       if (element) {
@@ -67,14 +117,25 @@ class App {
       }
     });
 
-    // Show target module
     const targetModule = this.modules.get(moduleName);
     const element = document.getElementById(`${moduleName}-page`);
     
     if (targetModule && element) {
       element.style.display = 'block';
-      await targetModule.activate();
+      
+      try {
+        await targetModule.activate();
+        logger.debug(`Activated module: ${moduleName}`);
+      } catch (error) {
+        logger.error(`Error activating module ${moduleName}:`, error);
+        this.errorHandler.handleError(error, { source: 'module.activate', moduleName });
+      }
+      
+      this.currentModule = moduleName;
       this.updateNavigation(moduleName);
+      this.eventBus.emit('module:activated', { moduleName });
+    } else {
+      logger.error(`Module not found: ${moduleName}`);
     }
   }
 
@@ -90,20 +151,18 @@ class App {
   }
 
   setupGlobalEvents() {
-    // Handle navigation clicks
+    logger.debug('Setting up global event listeners...');
+    
     document.addEventListener('click', (e) => {
       const navItem = e.target.closest('[data-route]');
       if (navItem) {
         e.preventDefault();
         const route = navItem.dataset.route;
         this.router.navigate(`/${route}`);
-        
-        // Close mobile menu on navigation
         this.closeMobileMenu();
         return;
       }
       
-      // Handle modal close buttons
       if (e.target.classList.contains('modal-close')) {
         const modal = e.target.closest('.modal');
         if (modal) {
@@ -112,24 +171,12 @@ class App {
         return;
       }
       
-      // Close modal when clicking backdrop
       if (e.target.classList.contains('modal')) {
         e.target.style.display = 'none';
         return;
       }
     });
 
-    // Debug function to check button bindings
-    window.checkButtonBindings = () => {
-      const buttons = document.querySelectorAll('button[id]');
-      console.log('=== Button Binding Check ===');
-      buttons.forEach(btn => {
-        const hasListeners = btn.onclick || btn.addEventListener.toString().includes('native');
-        console.log(`${btn.id}: ${hasListeners ? '✅' : '❌'} (${btn.textContent.trim()})`);
-      });
-    };
-
-    // Handle mobile menu toggle
     const mobileToggle = document.getElementById('mobile-menu-toggle');
     const navbar = document.getElementById('navbar');
     
@@ -138,7 +185,6 @@ class App {
         navbar.classList.toggle('open');
       });
       
-      // Close menu when clicking outside
       document.addEventListener('click', (e) => {
         if (!navbar.contains(e.target) && !mobileToggle.contains(e.target)) {
           this.closeMobileMenu();
@@ -146,9 +192,7 @@ class App {
       });
     }
 
-    // Handle keyboard shortcuts
     document.addEventListener('keydown', (e) => {
-      // ESC key closes modals
       if (e.key === 'Escape') {
         const openModal = document.querySelector('.modal[style*="display: block"], .modal[style*="display:block"]');
         if (openModal) {
@@ -159,41 +203,27 @@ class App {
       }
       
       if (e.ctrlKey || e.metaKey) {
-        switch (e.key) {
-          case '1':
-            e.preventDefault();
-            this.router.navigate('/chat');
-            break;
-          case '2':
-            e.preventDefault();
-            this.router.navigate('/agents');
-            break;
-          case '3':
-            e.preventDefault();
-            this.router.navigate('/tools');
-            break;
-          case '4':
-            e.preventDefault();
-            this.router.navigate('/tasks');
-            break;
-          case '5':
-            e.preventDefault();
-            this.router.navigate('/memory');
-            break;
-          case '6':
-            e.preventDefault();
-            this.router.navigate('/settings');
-            break;
-          case '7':
-            e.preventDefault();
-            this.router.navigate('/terminal');
-            break;
-          case '8':
-            e.preventDefault();
-            this.router.navigate('/files');
-            break;
+        const keyMap = {
+          '1': '/chat',
+          '2': '/agents',
+          '3': '/tools',
+          '4': '/tasks',
+          '5': '/memory',
+          '6': '/settings',
+          '7': '/terminal',
+          '8': '/files',
+          '9': '/deepsearch'
+        };
+        
+        if (keyMap[e.key]) {
+          e.preventDefault();
+          this.router.navigate(keyMap[e.key]);
         }
       }
+    });
+
+    window.addEventListener('beforeunload', (e) => {
+      this.cleanup();
     });
   }
 
@@ -203,9 +233,31 @@ class App {
       navbar.classList.remove('open');
     }
   }
+
+  cleanup() {
+    logger.info('Cleaning up app...');
+    
+    this.modules.forEach(async (module, name) => {
+      if (module.deactivate) {
+        try {
+          await module.deactivate();
+        } catch (error) {
+          logger.error(`Error cleaning up module ${name}:`, error);
+        }
+      }
+      if (module.cleanup) {
+        module.cleanup();
+      }
+    });
+    
+    this.router.destroy();
+    this.eventBus.destroy();
+    this.errorHandler.destroy();
+    
+    logger.info('App cleanup complete');
+  }
 }
 
-// Initialize app when DOM is loaded
 document.addEventListener('DOMContentLoaded', () => {
   window.app = new App();
 });

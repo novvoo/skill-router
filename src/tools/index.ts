@@ -1,13 +1,18 @@
 import { WebFetchTool } from './WebFetchTool.js'
 import { WebSearchTool } from './WebSearchTool.js'
+import { DeepSearchTool } from './DeepSearchTool.js'
 import { FileReadTool } from './FileReadTool.js'
 import { FileWriteTool } from './FileWriteTool.js'
 import { FileEditTool } from './FileEditTool.js'
+import { FileDeleteTool } from './FileDeleteTool.js'
+import { FileRenameTool } from './FileRenameTool.js'
+import { ListDirectoryTool } from './ListDirectoryTool.js'
 import { BashTool } from './BashTool.js'
 import { GlobTool } from './GlobTool.js'
 import { GrepTool } from './GrepTool.js'
 import { AskUserQuestionTool } from './AskUserQuestionTool.js'
 import { TerminalTool } from './TerminalTool.js'
+import { TodoWriteTool } from './TodoWriteTool.js'
 import { AgentTool } from '../agents/AgentTool.js'
 import type { Tools } from './Tool.js'
 
@@ -19,10 +24,16 @@ export function getAllTools(): Tools {
     // Agent management
     AgentTool,
     
+    // Planning tools (always loaded)
+    TodoWriteTool,
+    
     // File operations
     FileReadTool,
     FileWriteTool,
     FileEditTool,
+    FileDeleteTool,
+    FileRenameTool,
+    ListDirectoryTool,
     
     // Search tools
     GlobTool,
@@ -35,6 +46,7 @@ export function getAllTools(): Tools {
     // Network tools
     WebFetchTool,
     WebSearchTool,
+    DeepSearchTool,
     
     // User interaction
     AskUserQuestionTool,
@@ -52,11 +64,16 @@ export * from './Tool.js'
 export * from './ToolExecutor.js'
 export * from './WebFetchTool.js'
 export * from './WebSearchTool.js'
+export * from './DeepSearchTool.js'
 export * from './FileReadTool.js'
 export * from './FileWriteTool.js'
 export * from './FileEditTool.js'
+export * from './FileDeleteTool.js'
+export * from './FileRenameTool.js'
+export * from './ListDirectoryTool.js'
 export * from './BashTool.js'
 export * from './TerminalTool.js'
+export * from './TodoWriteTool.js'
 export * from './GlobTool.js'
 export * from './GrepTool.js'
 export * from './AskUserQuestionTool.js'

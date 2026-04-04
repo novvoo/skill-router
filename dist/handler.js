@@ -1213,7 +1213,8 @@ async function chatCompletions(config, { messages, temperature = 0.0, max_tokens
     const content = raw?.choices?.[0]?.message?.content ?? "";
     return { content: String(content || ""), raw };
 }
-async function chatCompletionsWithTools(config, { messages, tools, temperature = 0.0, max_tokens, toolExecutor, sessionId, onProgress, abortController, }) {
+async function chatCompletionsWithTools(config, { messages, tools, temperature = 0.0, max_tokens, toolExecutor, sessionId, onProgress, abortController, executeTools = true, // 新增：控制是否自动执行工具（默认true保持向后兼容）
+ }) {
     const base = config.baseUrl.endsWith("/") ? config.baseUrl : config.baseUrl + "/";
     const url = new URL("chat/completions", base).toString();
     const finalMessages = messages.map((m) => ({
@@ -1269,8 +1270,8 @@ async function chatCompletionsWithTools(config, { messages, tools, temperature =
     const message = choice?.message;
     const content = String(message?.content || "");
     const toolCalls = message?.tool_calls;
-    // If there are tool calls, execute them
-    if (toolCalls && toolCalls.length > 0 && toolExecutor) {
+    // If there are tool calls and executeTools is enabled, execute them
+    if (toolCalls && toolCalls.length > 0 && toolExecutor && executeTools) {
         onProgress?.({ stage: "tools_start", message: "执行工具调用" });
         const parsedToolCalls = toolCalls.map((tc) => ({
             id: String(tc.id || `tool_${Date.now()}_${Math.random().toString(36).substring(2, 11)}`),
@@ -1565,6 +1566,79 @@ function formatContext(nodes) {
     }
     return lines.join("\n");
 }
+async function executeWithAgent(config, options) {
+    const usedTools = new Set();
+    options.onProgress?.({ stage: "agent_start", message: "启动Agent执行任务" });
+    try {
+        const { AgentManager } = await import('./agents/AgentManager.js');
+        const agentManager = AgentManager.getInstance();
+        const description = options.skillName
+            ? `处理用户请求(Skill: ${options.skillName}): ${options.lastUser.slice(0, 100)}`
+            : `处理用户请求: ${options.lastUser.slice(0, 100)}`;
+        const agentInstance = await agentManager.spawnAgent('general', options.fullPrompt, {
+            description,
+            sessionId: options.sessionId,
+            workingDir: process.cwd(),
+            openaiConfig: {
+                apiKey: config.apiKey,
+                baseUrl: config.baseUrl,
+                model: config.model,
+            },
+            onProgress: (progress) => {
+                options.onProgress?.({
+                    stage: `agent_${progress.stage}`,
+                    message: progress.message,
+                    data: progress.data,
+                });
+                if (progress.data?.toolName) {
+                    usedTools.add(progress.data.toolName);
+                }
+            }
+        });
+        const agentResult = await new Promise((resolve, reject) => {
+            let settled = false;
+            const timeout = setTimeout(() => {
+                if (!settled) {
+                    settled = true;
+                    reject(new Error('Agent execution timeout'));
+                }
+            }, 120000);
+            const completeCallback = (result) => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timeout);
+                    resolve(result);
+                }
+            };
+            const errorCallback = (error) => {
+                if (!settled) {
+                    settled = true;
+                    clearTimeout(timeout);
+                    reject(error);
+                }
+            };
+            agentManager.onAgentComplete(agentInstance.id, completeCallback);
+            agentManager.onAgentError(agentInstance.id, errorCallback);
+        });
+        const content = agentResult.content || agentResult.result?.content || '';
+        options.onProgress?.({ stage: "agent_complete", message: "Agent执行完成" });
+        return { content, usedTools };
+    }
+    catch (agentError) {
+        console.warn('Agent execution failed, falling back to direct chat:', agentError);
+        const fallbackResult = await chatCompletionsWithTools(config, {
+            messages: options.promptMessages,
+            temperature: 0.2,
+            tools: options.toolExecutor.getToolSchemas(),
+            toolExecutor: options.toolExecutor,
+            sessionId: options.sessionId,
+            onProgress: options.onProgress,
+            abortController: new AbortController(),
+            executeTools: false,
+        });
+        return { content: fallbackResult.content, usedTools };
+    }
+}
 async function runWithRouting(config, args) {
     const onProgress = args.onProgress;
     const catalog = await loadCatalog();
@@ -1797,41 +1871,66 @@ async function runWithRouting(config, args) {
             ...(apiContextText ? [{ role: "system", content: apiContextText }] : []),
             ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
         ];
-        onProgress?.({ stage: "chat", message: "生成回复" });
-        const usedTools = new Set();
-        const result = toolsEnabled && toolExecutor
-            ? await chatCompletionsWithTools(config, {
-                messages: promptMessages,
-                temperature: 0.2,
-                tools: toolExecutor.getToolSchemas(),
-                toolExecutor,
+        // 判断是否需要使用Agent执行（当启用工具时）
+        const needsAgent = toolsEnabled && toolExecutor && toolExecutor.getToolSchemas().length > 0;
+        let content;
+        let usedTools = new Set();
+        if (needsAgent) {
+            const fullPrompt = [
+                apiContextText ? `[外部API数据]\n${apiContextText}` : "",
+                contextText ? `[检索到的上下文]\n${contextText}` : "",
+                summary ? `[对话摘要]\n${summary}` : "",
+                compressed.messages.length > 0 ? `[最近对话]\n${compressed.messages.slice(-4).map(m => `${m.role}: ${m.content}`).join('\n')}` : "",
+                `[用户请求]\n${lastUser}`,
+            ].filter(Boolean).join('\n\n');
+            const agentResult = await executeWithAgent(config, {
+                promptMessages,
+                fullPrompt,
                 sessionId,
-                onProgress: (e) => {
-                    // Track used tools from progress events
-                    if (e.stage === "tool_progress" && e.data?.toolName) {
-                        usedTools.add(e.data.toolName);
-                    }
-                    onProgress?.(e);
-                },
-                abortController: new AbortController(),
-            })
-            : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-        const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
-        onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+                lastUser,
+                toolExecutor: toolExecutor,
+                onProgress,
+            });
+            content = agentResult.content;
+            usedTools = agentResult.usedTools;
+        }
+        else {
+            // 不需要工具时，直接使用普通聊天
+            onProgress?.({ stage: "chat", message: "生成回复" });
+            const result = toolsEnabled && toolExecutor
+                ? await chatCompletionsWithTools(config, {
+                    messages: promptMessages,
+                    temperature: 0.2,
+                    tools: toolExecutor.getToolSchemas(),
+                    toolExecutor,
+                    sessionId,
+                    onProgress: (e) => {
+                        if (e.stage === "tool_progress" && e.data?.toolName) {
+                            usedTools.add(e.data.toolName);
+                        }
+                        onProgress?.(e);
+                    },
+                    abortController: new AbortController(),
+                })
+                : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+            content = result.content;
+            onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+        }
+        const finalContent = stripLeadingSkillAnnouncements(content, catalog.byName);
         if (memoryEnabled && cm) {
-            void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-            void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+            void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: finalContent }]);
+            void cm.persistSession([...compressed.messages, { role: "assistant", content: finalContent }], summary);
         }
         return {
             chosen,
             skill: null,
             used_skills: Array.from(usedTools),
-            tasks: [], // Add tasks field
-            tools: Array.from(usedTools), // Add tools field with actual used tools
-            response: content,
+            tasks: [],
+            tools: Array.from(usedTools),
+            response: finalContent,
             summary,
             summarized: compressed.summarized,
-            messages: [...compressed.messages, { role: "assistant", content }],
+            messages: [...compressed.messages, { role: "assistant", content: finalContent }],
             ...extraFields,
         };
     }
@@ -1848,31 +1947,59 @@ async function runWithRouting(config, args) {
             ...(apiContextText ? [{ role: "system", content: apiContextText }] : []),
             ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
         ];
-        onProgress?.({ stage: "chat", message: "生成回复" });
-        const result = toolsEnabled && toolExecutor
-            ? await chatCompletionsWithTools(config, {
-                messages: promptMessages,
-                temperature: 0.2,
-                tools: toolExecutor.getToolSchemas(),
-                toolExecutor,
+        // 判断是否需要使用Agent执行（当启用工具时）
+        const needsAgent2 = toolsEnabled && toolExecutor && toolExecutor.getToolSchemas().length > 0;
+        let content2;
+        let usedTools2 = new Set();
+        if (needsAgent2) {
+            const fullPrompt2 = [
+                apiContextText ? `[外部API数据]\n${apiContextText}` : "",
+                contextText ? `[检索到的上下文]\n${contextText}` : "",
+                summary ? `[对话摘要]\n${summary}` : "",
+                compressed.messages.length > 0 ? `[最近对话]\n${compressed.messages.slice(-4).map(m => `${m.role}: ${m.content}`).join('\n')}` : "",
+                `[用户请求]\n${lastUser}`,
+            ].filter(Boolean).join('\n\n');
+            const agentResult2 = await executeWithAgent(config, {
+                promptMessages,
+                fullPrompt: fullPrompt2,
                 sessionId,
+                lastUser,
+                toolExecutor: toolExecutor,
                 onProgress,
-                abortController: new AbortController(),
-            })
-            : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-        const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
-        onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+            });
+            content2 = agentResult2.content;
+            usedTools2 = agentResult2.usedTools;
+        }
+        else {
+            onProgress?.({ stage: "chat", message: "生成回复" });
+            const result2 = toolsEnabled && toolExecutor
+                ? await chatCompletionsWithTools(config, {
+                    messages: promptMessages,
+                    temperature: 0.2,
+                    tools: toolExecutor.getToolSchemas(),
+                    toolExecutor,
+                    sessionId,
+                    onProgress,
+                    abortController: new AbortController(),
+                })
+                : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+            content2 = result2.content;
+            onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+        }
+        const finalContent2 = stripLeadingSkillAnnouncements(content2, catalog.byName);
         if (memoryEnabled && cm) {
-            void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-            void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+            void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: finalContent2 }]);
+            void cm.persistSession([...compressed.messages, { role: "assistant", content: finalContent2 }], summary);
         }
         return {
             chosen,
             skill: null,
-            used_skills: [],
+            used_skills: Array.from(usedTools2),
+            tasks: [],
+            tools: Array.from(usedTools2),
             summary,
             summarized: compressed.summarized,
-            messages: [...compressed.messages, { role: "assistant", content }],
+            messages: [...compressed.messages, { role: "assistant", content: finalContent2 }],
             ...extraFields,
         };
     }
@@ -1889,32 +2016,62 @@ async function runWithRouting(config, args) {
         ...(apiContextText ? [{ role: "system", content: apiContextText }] : []),
         ...compressed.messages.map((m) => ({ role: m.role, content: m.content })),
     ];
-    onProgress?.({ stage: "chat", message: "生成回复" });
-    const result = toolsEnabled && toolExecutor
-        ? await chatCompletionsWithTools(config, {
-            messages: promptMessages,
-            temperature: 0.2,
-            tools: toolExecutor.getToolSchemas(),
-            toolExecutor,
+    // 判断是否需要使用Agent执行（当启用工具时）
+    const needsAgent3 = toolsEnabled && toolExecutor && toolExecutor.getToolSchemas().length > 0;
+    let content3;
+    let usedTools3 = new Set();
+    if (needsAgent3) {
+        const fullPrompt3 = [
+            `[Skill指令]\n${systemContent}`,
+            apiContextText ? `[外部API数据]\n${apiContextText}` : "",
+            contextText ? `[检索到的上下文]\n${contextText}` : "",
+            summary ? `[对话摘要]\n${summary}` : "",
+            compressed.messages.length > 0 ? `[最近对话]\n${compressed.messages.slice(-4).map(m => `${m.role}: ${m.content}`).join('\n')}` : "",
+            `[用户请求]\n${lastUser}`,
+        ].filter(Boolean).join('\n\n');
+        const agentResult3 = await executeWithAgent(config, {
+            promptMessages,
+            fullPrompt: fullPrompt3,
             sessionId,
+            lastUser,
+            toolExecutor: toolExecutor,
             onProgress,
-            abortController: new AbortController(),
-        })
-        : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
-    const content = stripLeadingSkillAnnouncements(result.content, catalog.byName);
-    onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+            skillName: meta.name,
+        });
+        content3 = agentResult3.content;
+        usedTools3 = agentResult3.usedTools;
+    }
+    else {
+        onProgress?.({ stage: "chat", message: "生成回复" });
+        const result3 = toolsEnabled && toolExecutor
+            ? await chatCompletionsWithTools(config, {
+                messages: promptMessages,
+                temperature: 0.2,
+                tools: toolExecutor.getToolSchemas(),
+                toolExecutor,
+                sessionId,
+                onProgress,
+                abortController: new AbortController(),
+            })
+            : await chatCompletions(config, { messages: promptMessages, temperature: 0.2 });
+        content3 = result3.content;
+        onProgress?.({ stage: "chat_done", message: "回复生成完成" });
+    }
+    const finalContent3 = stripLeadingSkillAnnouncements(content3, catalog.byName);
     if (memoryEnabled && cm) {
-        void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content }]);
-        void cm.persistSession([...compressed.messages, { role: "assistant", content }], summary);
+        void extractAndSaveMemories(config, cm, [...compressed.messages, { role: "assistant", content: finalContent3 }]);
+        void cm.persistSession([...compressed.messages, { role: "assistant", content: finalContent3 }], summary);
     }
     return {
         chosen,
         skill: { name: meta.name, description: meta.description, path: meta.path, priority_group: meta.priority_group },
         used_skills: [meta.name],
-        response: content,
+        tasks: [],
+        tools: Array.from(usedTools3),
+        response: finalContent3,
         summary,
         summarized: compressed.summarized,
-        messages: [...compressed.messages, { role: "assistant", content }],
+        messages: [...compressed.messages, { role: "assistant", content: finalContent3 }],
         ...extraFields,
     };
 }

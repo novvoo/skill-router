@@ -56,7 +56,10 @@ export class AgentManager {
         background: false,
         requiredTools: ['file_read', 'file_write', 'web_search', 'bash'],
         color: '#1976d2',
-        source: 'builtin'
+        source: 'builtin',
+        maxToolCalls: 50,
+        maxExecutionTimeMs: 30 * 60 * 1000, // 30 minutes
+        maxConcurrentTools: 3
       },
       {
         agentType: 'researcher',
@@ -66,7 +69,10 @@ export class AgentManager {
         background: true,
         requiredTools: ['web_search', 'web_fetch', 'file_write', 'file_read'],
         color: '#2e7d32',
-        source: 'builtin'
+        source: 'builtin',
+        maxToolCalls: 100,
+        maxExecutionTimeMs: 60 * 60 * 1000, // 60 minutes
+        maxConcurrentTools: 5
       },
       {
         agentType: 'coder',
@@ -78,7 +84,10 @@ export class AgentManager {
         permissionMode: 'auto',
         requiredTools: ['file_read', 'file_write', 'file_edit', 'bash', 'grep', 'glob'],
         color: '#ff9800',
-        source: 'builtin'
+        source: 'builtin',
+        maxToolCalls: 200,
+        maxExecutionTimeMs: 60 * 60 * 1000, // 60 minutes
+        maxConcurrentTools: 5
       }
     ]
 

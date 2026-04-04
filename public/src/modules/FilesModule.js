@@ -6,6 +6,8 @@ export class FilesModule extends BaseModule {
     super(api, config);
     this.currentPath = '';
     this.directoryContent = [];
+    this.currentEditingFile = null;
+    this.currentEditingFileContent = '';
   }
 
   async onActivate() {
@@ -44,6 +46,22 @@ export class FilesModule extends BaseModule {
     // Set CWD modal
     this.addEventListener('#submit-cwd-btn', 'click', () => this.setCWD());
     this.addEventListener('#cancel-cwd-btn', 'click', () => this.hideSetCWDModal());
+
+    // Editor buttons
+    this.addEventListener('#save-file-btn', 'click', () => this.saveCurrentFile());
+    this.addEventListener('#close-editor-btn', 'click', () => this.closeEditor());
+
+    // Rename modal
+    this.addEventListener('#submit-rename-btn', 'click', () => this.renameCurrentFile());
+    this.addEventListener('#cancel-rename-btn', 'click', () => this.hideRenameFileModal());
+
+    // Copy modal
+    this.addEventListener('#submit-copy-btn', 'click', () => this.copyCurrentFile());
+    this.addEventListener('#cancel-copy-btn', 'click', () => this.hideCopyFileModal());
+
+    // Move modal
+    this.addEventListener('#submit-move-btn', 'click', () => this.moveCurrentFile());
+    this.addEventListener('#cancel-move-btn', 'click', () => this.hideMoveFileModal());
   }
 
   async loadCurrentDirectory() {
@@ -171,7 +189,7 @@ export class FilesModule extends BaseModule {
         editBtn.addEventListener('click', (e) => {
           e.stopPropagation();
           const path = item.dataset.path;
-          this.showEditFileModal(path);
+          this.openEditor(path);
         });
       }
 
@@ -382,236 +400,171 @@ export class FilesModule extends BaseModule {
     this.showStatus('文件列表已刷新');
   }
 
-  // Edit file modal
-  showEditFileModal(filePath) {
-    // Create modal
-    const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.display = 'block';
-    modal.innerHTML = `
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>编辑文件</h3>
-          <button class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="edit-file-form">
-            <div class="form-group">
-              <label>文件路径</label>
-              <input type="text" value="${filePath}" disabled>
-            </div>
-            <div class="form-group">
-              <label>文件内容</label>
-              <textarea id="edit-file-content" rows="10"></textarea>
-            </div>
-            <div class="form-actions">
-              <button id="submit-edit-file-btn" type="button" class="btn-primary">保存</button>
-              <button id="cancel-edit-file-btn" type="button" class="btn-secondary">取消</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
+  // Editor functions
+  async openEditor(filePath) {
+    this.currentEditingFile = filePath;
+    const fileName = filePath.split('/').pop();
+    const fileNameElement = this.element.querySelector('#editor-file-name');
+    const emptyState = this.element.querySelector('#editor-empty-state');
+    const textarea = this.element.querySelector('#editor-textarea');
+    const saveBtn = this.element.querySelector('#save-file-btn');
+    const closeBtn = this.element.querySelector('#close-editor-btn');
+
+    fileNameElement.textContent = fileName;
+    emptyState.style.display = 'none';
+    textarea.style.display = 'block';
+    saveBtn.style.display = 'inline-flex';
+    closeBtn.style.display = 'inline-flex';
 
     // Load file content
-    this.loadFileContent(filePath).then(content => {
-      const contentInput = modal.querySelector('#edit-file-content');
-      if (contentInput) {
-        contentInput.value = content;
-      }
-    });
+    try {
+      this.currentEditingFileContent = await this.loadFileContent(filePath);
+      textarea.value = this.currentEditingFileContent;
+    } catch (error) {
+      this.showStatus(`加载文件失败：${error.message}`, true);
+    }
+  }
 
-    // Bind events
-    modal.querySelector('#submit-edit-file-btn').addEventListener('click', async () => {
-      const content = modal.querySelector('#edit-file-content').value;
-      await this.editFile(filePath, content);
-      modal.remove();
-    });
+  closeEditor() {
+    this.currentEditingFile = null;
+    this.currentEditingFileContent = '';
+    const fileNameElement = this.element.querySelector('#editor-file-name');
+    const emptyState = this.element.querySelector('#editor-empty-state');
+    const textarea = this.element.querySelector('#editor-textarea');
+    const saveBtn = this.element.querySelector('#save-file-btn');
+    const closeBtn = this.element.querySelector('#close-editor-btn');
 
-    modal.querySelector('#cancel-edit-file-btn').addEventListener('click', () => {
-      modal.remove();
-    });
+    fileNameElement.textContent = '未打开文件';
+    emptyState.style.display = 'flex';
+    textarea.style.display = 'none';
+    textarea.value = '';
+    saveBtn.style.display = 'none';
+    closeBtn.style.display = 'none';
+  }
 
-    modal.querySelector('.modal-close').addEventListener('click', () => {
-      modal.remove();
-    });
+  async saveCurrentFile() {
+    if (!this.currentEditingFile) {
+      this.showStatus('没有打开的文件', true);
+      return;
+    }
 
-    // Close modal when clicking outside
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        modal.remove();
-      }
-    });
+    const textarea = this.element.querySelector('#editor-textarea');
+    const newContent = textarea.value;
+
+    await this.editFile(this.currentEditingFile, newContent);
+    this.currentEditingFileContent = newContent;
   }
 
   // Rename file modal
   showRenameFileModal(oldPath) {
+    const modal = this.element.querySelector('#rename-file-modal');
+    const oldPathInput = this.element.querySelector('#rename-old-path');
+    const newNameInput = this.element.querySelector('#rename-new-name');
     const fileName = oldPath.split('/').pop();
+
+    if (modal && oldPathInput && newNameInput) {
+      oldPathInput.value = oldPath;
+      newNameInput.value = fileName;
+      modal.style.display = 'block';
+    }
+  }
+
+  hideRenameFileModal() {
+    const modal = this.element.querySelector('#rename-file-modal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+  }
+
+  async renameCurrentFile() {
+    const oldPathInput = this.element.querySelector('#rename-old-path');
+    const newNameInput = this.element.querySelector('#rename-new-name');
+
+    if (!oldPathInput || !newNameInput) return;
+
+    const oldPath = oldPathInput.value;
+    const newFileName = newNameInput.value.trim();
     const directory = oldPath.substring(0, oldPath.lastIndexOf('/'));
+    const newPath = directory + '/' + newFileName;
 
-    // Create modal
-    const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.display = 'block';
-    modal.innerHTML = `
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>重命名文件</h3>
-          <button class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="rename-file-form">
-            <div class="form-group">
-              <label>当前路径</label>
-              <input type="text" value="${oldPath}" disabled>
-            </div>
-            <div class="form-group">
-              <label>新文件名</label>
-              <input type="text" id="new-file-name" value="${fileName}">
-            </div>
-            <div class="form-actions">
-              <button id="submit-rename-file-btn" type="button" class="btn-primary">重命名</button>
-              <button id="cancel-rename-file-btn" type="button" class="btn-secondary">取消</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
+    await this.renameFile(oldPath, newPath);
+    this.hideRenameFileModal();
 
-    // Bind events
-    modal.querySelector('#submit-rename-file-btn').addEventListener('click', async () => {
-      const newFileName = modal.querySelector('#new-file-name').value;
-      const newPath = directory + '/' + newFileName;
-      await this.renameFile(oldPath, newPath);
-      modal.remove();
-    });
-
-    modal.querySelector('#cancel-rename-file-btn').addEventListener('click', () => {
-      modal.remove();
-    });
-
-    modal.querySelector('.modal-close').addEventListener('click', () => {
-      modal.remove();
-    });
-
-    // Close modal when clicking outside
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        modal.remove();
-      }
-    });
+    // If we're currently editing this file, close the editor
+    if (this.currentEditingFile === oldPath) {
+      this.closeEditor();
+    }
   }
 
   // Copy file modal
   showCopyFileModal(sourcePath) {
-    // Create modal
-    const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.display = 'block';
-    modal.innerHTML = `
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>复制文件</h3>
-          <button class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="copy-file-form">
-            <div class="form-group">
-              <label>源文件</label>
-              <input type="text" value="${sourcePath}" disabled>
-            </div>
-            <div class="form-group">
-              <label>目标路径</label>
-              <input type="text" id="copy-destination-path" value="${sourcePath}">
-            </div>
-            <div class="form-actions">
-              <button id="submit-copy-file-btn" type="button" class="btn-primary">复制</button>
-              <button id="cancel-copy-file-btn" type="button" class="btn-secondary">取消</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
+    const modal = this.element.querySelector('#copy-file-modal');
+    const sourcePathInput = this.element.querySelector('#copy-source-path');
+    const destinationPathInput = this.element.querySelector('#copy-destination-path');
 
-    // Bind events
-    modal.querySelector('#submit-copy-file-btn').addEventListener('click', async () => {
-      const destinationPath = modal.querySelector('#copy-destination-path').value;
-      await this.copyFile(sourcePath, destinationPath);
-      modal.remove();
-    });
+    if (modal && sourcePathInput && destinationPathInput) {
+      sourcePathInput.value = sourcePath;
+      destinationPathInput.value = sourcePath;
+      modal.style.display = 'block';
+    }
+  }
 
-    modal.querySelector('#cancel-copy-file-btn').addEventListener('click', () => {
-      modal.remove();
-    });
+  hideCopyFileModal() {
+    const modal = this.element.querySelector('#copy-file-modal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+  }
 
-    modal.querySelector('.modal-close').addEventListener('click', () => {
-      modal.remove();
-    });
+  async copyCurrentFile() {
+    const sourcePathInput = this.element.querySelector('#copy-source-path');
+    const destinationPathInput = this.element.querySelector('#copy-destination-path');
 
-    // Close modal when clicking outside
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        modal.remove();
-      }
-    });
+    if (!sourcePathInput || !destinationPathInput) return;
+
+    const sourcePath = sourcePathInput.value;
+    const destinationPath = destinationPathInput.value.trim();
+
+    await this.copyFile(sourcePath, destinationPath);
+    this.hideCopyFileModal();
   }
 
   // Move file modal
   showMoveFileModal(sourcePath) {
-    // Create modal
-    const modal = document.createElement('div');
-    modal.className = 'modal';
-    modal.style.display = 'block';
-    modal.innerHTML = `
-      <div class="modal-content">
-        <div class="modal-header">
-          <h3>移动文件</h3>
-          <button class="modal-close">&times;</button>
-        </div>
-        <div class="modal-body">
-          <form id="move-file-form">
-            <div class="form-group">
-              <label>源文件</label>
-              <input type="text" value="${sourcePath}" disabled>
-            </div>
-            <div class="form-group">
-              <label>目标路径</label>
-              <input type="text" id="move-destination-path" value="${sourcePath}">
-            </div>
-            <div class="form-actions">
-              <button id="submit-move-file-btn" type="button" class="btn-primary">移动</button>
-              <button id="cancel-move-file-btn" type="button" class="btn-secondary">取消</button>
-            </div>
-          </form>
-        </div>
-      </div>
-    `;
-    document.body.appendChild(modal);
+    const modal = this.element.querySelector('#move-file-modal');
+    const sourcePathInput = this.element.querySelector('#move-source-path');
+    const destinationPathInput = this.element.querySelector('#move-destination-path');
 
-    // Bind events
-    modal.querySelector('#submit-move-file-btn').addEventListener('click', async () => {
-      const destinationPath = modal.querySelector('#move-destination-path').value;
-      await this.moveFile(sourcePath, destinationPath);
-      modal.remove();
-    });
+    if (modal && sourcePathInput && destinationPathInput) {
+      sourcePathInput.value = sourcePath;
+      destinationPathInput.value = sourcePath;
+      modal.style.display = 'block';
+    }
+  }
 
-    modal.querySelector('#cancel-move-file-btn').addEventListener('click', () => {
-      modal.remove();
-    });
+  hideMoveFileModal() {
+    const modal = this.element.querySelector('#move-file-modal');
+    if (modal) {
+      modal.style.display = 'none';
+    }
+  }
 
-    modal.querySelector('.modal-close').addEventListener('click', () => {
-      modal.remove();
-    });
+  async moveCurrentFile() {
+    const sourcePathInput = this.element.querySelector('#move-source-path');
+    const destinationPathInput = this.element.querySelector('#move-destination-path');
 
-    // Close modal when clicking outside
-    modal.addEventListener('click', (e) => {
-      if (e.target === modal) {
-        modal.remove();
-      }
-    });
+    if (!sourcePathInput || !destinationPathInput) return;
+
+    const sourcePath = sourcePathInput.value;
+    const destinationPath = destinationPathInput.value.trim();
+
+    await this.moveFile(sourcePath, destinationPath);
+    this.hideMoveFileModal();
+
+    // If we're currently editing this file, close the editor
+    if (this.currentEditingFile === sourcePath) {
+      this.closeEditor();
+    }
   }
 
   // Load file content
